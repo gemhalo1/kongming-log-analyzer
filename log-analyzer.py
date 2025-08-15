@@ -43,63 +43,64 @@ class NlpRequest(object):
 
     @property
     def location(self):
-        return self.record['metadata']['longitude'], self.record['metadata']['latitude']
+        return self.record['central-nlp-request']['metadata']['longitude'], self.record['central-nlp-request']['metadata']['latitude']
     
     @property
-    def namespace(self):
-        return self.record['header']['namespace']
-
-    @property
-    def name(self):
-        return self.record['header']['name']
-
-    @property
     def account_id(self):
-        return self.record['metadata']['account_id']
+        return self.record['central-nlp-request']['metadata']['accountId']
 
     @property
     def xj_account_id(self):
-        return self.record['metadata']['xjAccountId']
+        return self.record['central-nlp-request']['metadata']['xjAccountId']
+
+    @property
+    def files(self):
+        files = self.record['central-nlp-request'].get('files')
+        if isinstance(files, list):
+            return [file['ossUrl'] for file in files if 'ossUrl' in file]
+        return None
 
     @property
     def device_id(self):
-        return self.record['metadata']['deviceId']
+        return self.record['central-nlp-request']['metadata']['deviceId']
 
     @property
     def glass_device_id(self):
-        return self.record['metadata']['glassDeviceId']
+        return self.record['central-nlp-request']['metadata']['glassDeviceId']
 
     @property
     def iot_device_id(self):
-        return self.record['metadata']['iotDeviceId']
+        return self.record['central-nlp-request']['metadata']['iotDeviceId']
 
     @property
     def glass_product(self):
-        return self.record['metadata']['glassProduct']
+        return self.record['central-nlp-request']['metadata']['glassProduct']
 
     @property
     def function_type(self):
-        return self.record['metadata']['functionType']
+        return self.record['central-nlp-request']['metadata']['functionType']
 
     @property
     def origin_type(self):
-        return self.record['metadata']['originType']
+        return self.record['central-nlp-request']['metadata']['originType']
 
     @property
     def session_id(self):
-        return self.record['metadata']['sessionId']
+        return self.record['central-nlp-request']['metadata']['sessionId']
 
     @property
     def trace_id(self):
-        return self.record['metadata']['terminalTraceId']
+        return self.record['central-nlp-request']['metadata']['terminalTraceId']
 
     @property
     def time_zone(self):
-        return self.record['metadata']['timeZone']
+        return self.record['central-nlp-request']['metadata']['timeZone']
 
     @property
     def query(self):
-        return self.record['payload']['q']
+        q = self.record['central-nlp-request']['payload']['q']
+        return q if q != _CLEAN_CONTEXT_MAGIC_STRING else '<清除上下文>'
+
 
     @property
     def timestamp(self):
@@ -176,7 +177,7 @@ class KongmingELKServer(object):
                     "range": {
                         "@timestamp": {
                             "gte": timestamp_begin,
-                            "lt":  "timestamp_end",
+                            "lt":  timestamp_end,
                         }
                     }
                 })
@@ -192,7 +193,7 @@ class KongmingELKServer(object):
                 must_clause.append({
                     "range": {
                         "@timestamp": {
-                            "lt":  "timestamp_end",
+                            "lt":  timestamp_end,
                         }
                     }
                 })
@@ -376,7 +377,7 @@ class KongmingLogAnalyzer(object):
             if remove_key in record:
                 del record[remove_key]
 
-        for remove_key in ['messageobj', 'log', 'input', 'lmt', 'level', 'fields', 'class', 'lblpl', 'lnode', 'lenv', '@timestamp', 'type', 'sort']:
+        for remove_key in ['messageobj', 'log', 'input', 'lmt', 'level', 'fields', 'class', 'lblpl', 'lnode', 'lenv', 'type', 'sort']:
             if remove_key in src:
                 del src[remove_key]
 
@@ -779,7 +780,8 @@ class KongmingLogAnalyzer(object):
                         f_out.write(f"### message\n```json\n{message}\n```\n")
                     elif isinstance(message, str) and 'final response: ' in message:
                         pos = message.index(',parameters:')
-                        f_out.write(f"\n### message\n{'\n- '.join(message[:pos].split(','))}")
+                        inner_msg = '\n- '.join(message[:pos].split(','))
+                        f_out.write(f"\n### message\n{inner_msg}")
 
                         parameters = json.loads(message[pos+len(',parameters:'):])
                         if 'result_' in parameters:
@@ -789,8 +791,373 @@ class KongmingLogAnalyzer(object):
                         f_out.write(f'\n```json\n{json.dumps(record, indent=2, ensure_ascii=False, sort_keys=True)}\n```\n')
 
 
-def print_nlp_request_table(nlp_requests:List[NlpRequest]):
-    pass
+def print_nlp_request_table(nlp_requests: List[NlpRequest]):
+    """
+    使用rich库打印NlpRequest表格
+    
+    Args:
+        nlp_requests: NlpRequest对象列表
+    """
+    from rich.table import Table
+    from rich.console import Console
+
+    console = Console()
+    
+    # 创建表格
+    table = Table(title="NLP Requests", show_header=True, header_style="bold magenta")
+    
+    # 添加列
+    table.add_column("No.", style="dim", no_wrap=True)  # 序号列
+    table.add_column("Timestamp", style="dim", no_wrap=True)  # 不换行
+    table.add_column("Session ID", width=36)
+    table.add_column("Trace ID", width=36)
+    table.add_column("Account ID", width=15)
+    table.add_column("Device ID", width=36)
+    table.add_column("Query", width=30)
+    
+    # 添加行数据
+    for idx, request in enumerate(nlp_requests, 1):  # 序号从1开始
+        table.add_row(
+            str(idx),  # 序号
+            request.timestamp or "",
+            request.session_id or "",
+            request.trace_id or "",
+            request.account_id or "",
+            request.device_id or "",
+            request.query or "",
+        )
+    
+    # 打印表格
+    console.print(table)
+
+def print_nlp_request_html(nlp_requests: List[NlpRequest], filename: str = "nlp_requests.html"):
+    """
+    将NlpRequest列表输出到HTML文件中的表格
+    
+    Args:
+        nlp_requests: NlpRequest对象列表
+        filename: 输出的HTML文件名
+    """
+    html_content = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NLP Requests</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f5f7fa;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column; /* 纵向排列标题和表格，避免重合 */
+            align-items: center; /* 居中内容 */
+        }
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        table {
+            width: auto; /* 根据列自动宽度，居中显示 */
+            min-width: 700px; /* 保证有一定宽度，避免过窄 */
+            border-collapse: collapse;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            background-color: white;
+            border-radius: 8px;
+            /* 允许 tooltip 溢出表格 */
+            overflow: visible;
+            margin: 0 auto;
+        }
+        th {
+            background-color: #3498db;
+            color: white;
+            text-align: left;
+            padding: 12px 15px;
+            font-weight: 600;
+        }
+        tbody {
+            font-family: 'Courier New', Courier, monospace;
+        }
+        tr:nth-child(even) {
+            background-color: #f8f9fa;
+        }
+        tr:hover {
+            background-color: #e3f2fd;
+        }
+        td, th {
+            padding: 10px 15px;
+            border-bottom: 1px solid #eee;
+            /* 不在 td 上使用 overflow:hidden，避免 tooltip 被裁剪 */
+        }
+        /* 在单元格内部用 .cell-content 提供不换行、溢出省略效果（宽度自适应表格列） */
+        .cell-content {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            /* 列宽由表格和内容决定，避免在这里限制宽度 */
+        }
+        .no-wrap {
+            white-space: nowrap;
+        }
+        .query-cell {
+            /* 不限制宽度，表格列自适应 */
+        }
+        .header-cell {
+            position: sticky;
+            top: 0;
+        }
+        .tooltip {
+            position: relative;
+            display: inline-block;
+            width: 100%;
+            height: 100%;
+            overflow: visible; /* 确保 tooltip 不被祖先裁剪 */
+        }
+        .tooltip .tooltiptext {
+            visibility: hidden;
+            display: block;
+            max-width: 900px; /* 放宽宽度，避免多数文本换行 */
+            background-color: #ffffff; /* 浅色背景 */
+            color: #222222; /* 深色字体 */
+            text-align: left;
+            border-radius: 6px;
+            padding: 12px;
+            position: absolute;
+            z-index: 99999;
+            bottom: 125%;
+            left: 50%;
+            transform: translateX(-50%);
+            opacity: 0;
+            transition: opacity 0.18s ease;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-size: 14px;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.08);
+            border: 1px solid rgba(0,0,0,0.06);
+            outline: 0;
+            white-space: pre-wrap; /* 保留部分换行并允许换行 */
+            word-break: break-word;
+        }
+        .tooltip .tooltiptext::after {
+            content: "";
+            position: absolute;
+            top: 100%;
+            left: 50%;
+            margin-left: -5px;
+            border-width: 5px;
+            border-style: solid;
+            border-color: #ffffff transparent transparent transparent; /* 与浅色背景一致 */
+        }
+        .tooltip:hover .tooltiptext {
+            visibility: visible;
+            opacity: 1;
+        }
+        .tooltip-table {
+            width: auto; /* 根据内容自适应，避免强制扩展或过窄 */
+            border-collapse: collapse;
+            margin: 0;
+        }
+        .tooltip-table td {
+            padding: 4px 8px;
+            border: none;
+            font-size: 14px;
+            background-color: transparent;
+            white-space: normal;
+            word-break: break-word;
+            color: #222222; /* 深色文字 */
+        }
+        .tooltip-table tr:nth-child(odd) {
+            background-color: transparent; /* 去掉浅色行背景，避免与深色背景冲突 */
+        }
+        .tooltip-table tr:hover {
+            background-color: rgba(255, 255, 255, 0.02);
+        }
+        .property-name {
+            font-weight: bold;
+            width: auto; /* 自适应宽度 */
+            white-space: nowrap; /* 名称列不换行，保持紧凑 */
+        }
+
+        /* 第二列为字段值，禁止换行，超出显示省略 */
+        .tooltip-table td:nth-child(2) {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 640px;
+        }
+        /* 图片预览样式：当 tooltip 中包含图片时，限制大小并居中显示 */
+        .tooltip-image {
+            text-align: center;
+            margin-top: 8px;
+        }
+        .tooltip-image img {
+            max-width: 860px; /* 不超过 tooltip 最大宽度 */
+            max-height: 480px; /* 限制高度，保持比例 */
+            width: auto;
+            height: auto;
+            display: block;
+            margin: 6px auto 0 auto;
+            border-radius: 6px;
+            box-shadow: 0 6px 18px rgba(0,0,0,0.08);
+        }
+        /* Query 列左侧的小图标及其仅显示图片的 tooltip（不显示表格） */
+        .img-icon {
+            display: inline-block;
+            width: 18px;
+            height: 18px;
+            line-height: 18px;
+            text-align: center;
+            margin-right: 8px;
+            vertical-align: middle;
+            position: relative;
+            cursor: pointer;
+            color: #2c3e50;
+            font-size: 14px;
+        }
+        .img-icon .imgtooltip {
+            visibility: hidden;
+            position: absolute;
+            bottom: 125%;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 100000;
+            max-width: 860px;
+            max-height: 480px;
+            padding: 0;
+            background: transparent;
+        }
+        .img-icon .imgtooltip img {
+            display: block;
+            max-width: 860px;
+            max-height: 480px;
+            width: auto;
+            height: auto;
+            border-radius: 6px;
+            box-shadow: 0 6px 18px rgba(0,0,0,0.08);
+        }
+        .img-icon:hover .imgtooltip {
+            visibility: visible;
+            opacity: 1;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>NLP Requests</h1>
+        <table>
+            <thead>
+            <tr>
+                    <th class="header-cell">No.</th>
+                    <th class="header-cell">Timestamp</th>
+                    <th class="header-cell">Trace ID</th>
+                    <th class="header-cell">Device ID</th>
+                    <th class="header-cell">Glass Device ID</th>
+                    <th class="header-cell">Glass Product</th>
+                    <th class="header-cell">Location</th>
+                    <th class="header-cell">Query</th>
+                </tr>
+            </thead>
+            <tbody>
+"""
+
+    for idx, request in enumerate(nlp_requests, 1):
+        # 位置保留小数点后5位
+        location_str = ''
+        try:
+            loc = getattr(request, 'location', None)
+            if loc and len(loc) >= 2:
+                lon = float(loc[0])
+                lat = float(loc[1])
+                location_str = f"{lon:.5f},{lat:.5f}"
+        except Exception:
+            location_str = ''
+        # 创建tooltip内容（不再转义引号，直接嵌入HTML）
+        tooltip_content = f'''
+        <table class="tooltip-table">
+            <tr><td class="property-name">Timestamp</td><td>{request.timestamp or ''}</td></tr>
+            <tr><td class="property-name">Session ID</td><td>{request.session_id or ''}</td></tr>
+            <tr><td class="property-name">Trace ID</td><td>{request.trace_id or ''}</td></tr>
+            <tr><td class="property-name">Account ID</td><td>{request.account_id or ''}</td></tr>
+            <tr><td class="property-name">Device ID</td><td>{request.device_id or ''}</td></tr>
+            <tr><td class="property-name">Glass Device ID</td><td>{request.glass_device_id or ''}</td></tr>
+            <tr><td class="property-name">IoT Device ID</td><td>{request.iot_device_id or ''}</td></tr>
+            <tr><td class="property-name">Glass Product</td><td>{str(request.glass_product)}</td></tr>
+            <tr><td class="property-name">Function Type</td><td>{str(request.function_type) if request.function_type is not None else ''}</td></tr>
+            <tr><td class="property-name">Origin Type</td><td>{str(request.origin_type) if request.origin_type is not None else ''}</td></tr>
+            <tr><td class="property-name">Time Zone</td><td>{request.time_zone or ''}</td></tr>
+            <tr><td class="property-name">Location</td><td>{location_str}</td></tr>
+            <tr><td class="property-name">Query</td><td>{request.query or ''}</td></tr>
+        </table>
+        '''
+
+        # 如果存在 files 字段并且非空，将第一个可用链接作为图片预览添加到 tooltip 下方
+        first_file_img = ''
+        try:
+            files = getattr(request, 'files', None)
+            if files and isinstance(files, list) and len(files) > 0:
+                first = files[0]
+                if isinstance(first, str) and first.strip():
+                    # 插入图片预览，并在下方提供可点击的原始链接作为回退
+                    safe_url = first
+                    first_file_img = (
+                        f'<div class="tooltip-image">'
+                        f'<img src="{safe_url}" alt="attachment"/>'
+                        f'<div style="margin-top:6px;font-size:12px;color:#2c3e50;">'
+                        f'<a href="{safe_url}" target="_blank" rel="noopener noreferrer">打开附件</a>'
+                        f'</div>'
+                        f'</div>'
+                    )
+        except Exception:
+            first_file_img = ''
+
+        if first_file_img:
+            tooltip_content = tooltip_content + first_file_img
+
+        # 构建 query 单元格内的内容：如果存在附件，左侧显示小图标（hover 仅显示图片），同时保留整行的详细 tooltip
+        query_cell_inner = f"{request.query or ''}"
+        try:
+            files_check = getattr(request, 'files', None)
+            if files_check and isinstance(files_check, list) and len(files_check) > 0 and isinstance(files_check[0], str) and files_check[0].strip():
+                img_url = files_check[0]
+                # 图标 hover 时仅显示图片
+                img_icon_html = (
+                    f'<span class="img-icon">📷'
+                    f'<span class="imgtooltip"><img src="{img_url}" alt="attachment"/></span>'
+                    f'</span>'
+                )
+                query_cell_inner = img_icon_html + query_cell_inner
+        except Exception:
+            pass
+
+        html_content += f'''
+                <tr>
+                    <td><div class="tooltip"><div class="cell-content">{idx}</div><span class="tooltiptext">{tooltip_content}</span></div></td>
+                    <td><div class="tooltip"><div class="cell-content">{request.timestamp or ''}</div><span class="tooltiptext">{tooltip_content}</span></div></td>
+                    <td><div class="tooltip"><div class="cell-content">{request.trace_id or ''}</div><span class="tooltiptext">{tooltip_content}</span></div></td>
+                    <td><div class="tooltip"><div class="cell-content">{request.device_id or ''}</div><span class="tooltiptext">{tooltip_content}</span></div></td>
+                    <td><div class="tooltip"><div class="cell-content">{request.glass_device_id or ''}</div><span class="tooltiptext">{tooltip_content}</span></div></td>
+                    <td><div class="tooltip"><div class="cell-content">{str(request.glass_product)}</div><span class="tooltiptext">{tooltip_content}</span></div></td>
+                    <td><div class="tooltip"><div class="cell-content">{location_str}</div><span class="tooltiptext">{tooltip_content}</span></div></td>
+                    <td class="query-cell"><div class="tooltip"><div class="cell-content">{query_cell_inner}</div><span class="tooltiptext">{tooltip_content}</span></div></td>
+                </tr>
+'''
+
+    html_content += """
+            </tbody>
+        </table>
+    </div>
+</body>
+</html>
+"""
+
+    with open(filename, 'w', encoding='utf-8') as f:
+        f.write(html_content)
 
 if __name__ == '__main__':
     server = KongmingELKServer()
@@ -809,10 +1176,12 @@ if __name__ == '__main__':
 
     records, nlp_requests = server.query_nlp_request( 
                                      timestamp_begin='2025-08-15',
-                                     size=1000, 
+                                     timestamp_end='2025-08-16',
+                                     size=100, 
                                      pagesize=200, 
                                      out_file="logs/0815-nlp.json"
     )
     analyzer.analyze(records, "logs/0815-nlp.md")
+    print_nlp_request_html(nlp_requests, "logs/nlp_requests.html")
 
-    pprint(nlp_requests)
+    print_nlp_request_table(nlp_requests)
