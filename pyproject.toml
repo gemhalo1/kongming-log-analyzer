@@ -1,0 +1,13 @@
+[project]
+name = "log-analyze"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "httpx>=0.28.1",
+    "ipykernel>=6.30.1",
+    "ipywidgets>=8.1.7",
+    "requests>=2.32.4",
+    "tqdm>=4.67.1",
+]
