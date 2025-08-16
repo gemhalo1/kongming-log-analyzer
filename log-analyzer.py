@@ -907,7 +907,8 @@ def print_nlp_request_html(nlp_requests: List[NlpRequest], filename: str = "nlp_
             white-space: nowrap;
         }
         .query-cell {
-            /* 不限制宽度，表格列自适应 */
+            display: flex;
+            align-items: center;
         }
         .header-cell {
             position: sticky;
@@ -916,8 +917,6 @@ def print_nlp_request_html(nlp_requests: List[NlpRequest], filename: str = "nlp_
         .tooltip {
             position: relative;
             display: inline-block;
-            width: 100%;
-            height: 100%;
             overflow: visible; /* 确保 tooltip 不被祖先裁剪 */
         }
         .tooltip .tooltiptext {
@@ -991,21 +990,6 @@ def print_nlp_request_html(nlp_requests: List[NlpRequest], filename: str = "nlp_
             text-overflow: ellipsis;
             max-width: 640px;
         }
-        /* 图片预览样式：当 tooltip 中包含图片时，限制大小并居中显示 */
-        .tooltip-image {
-            text-align: center;
-            margin-top: 8px;
-        }
-        .tooltip-image img {
-            max-width: 860px; /* 不超过 tooltip 最大宽度 */
-            max-height: 480px; /* 限制高度，保持比例 */
-            width: auto;
-            height: auto;
-            display: block;
-            margin: 6px auto 0 auto;
-            border-radius: 6px;
-            box-shadow: 0 6px 18px rgba(0,0,0,0.08);
-        }
         /* Query 列左侧的小图标及其仅显示图片的 tooltip（不显示表格） */
         .img-icon {
             display: inline-block;
@@ -1031,6 +1015,8 @@ def print_nlp_request_html(nlp_requests: List[NlpRequest], filename: str = "nlp_
             max-height: 480px;
             padding: 0;
             background: transparent;
+            opacity: 0;
+            transition: opacity 0.18s ease;
         }
         .img-icon .imgtooltip img {
             display: block;
@@ -1096,31 +1082,9 @@ def print_nlp_request_html(nlp_requests: List[NlpRequest], filename: str = "nlp_
         </table>
         '''
 
-        # 如果存在 files 字段并且非空，将第一个可用链接作为图片预览添加到 tooltip 下方
-        first_file_img = ''
-        try:
-            files = getattr(request, 'files', None)
-            if files and isinstance(files, list) and len(files) > 0:
-                first = files[0]
-                if isinstance(first, str) and first.strip():
-                    # 插入图片预览，并在下方提供可点击的原始链接作为回退
-                    safe_url = first
-                    first_file_img = (
-                        f'<div class="tooltip-image">'
-                        f'<img src="{safe_url}" alt="attachment"/>'
-                        f'<div style="margin-top:6px;font-size:12px;color:#2c3e50;">'
-                        f'<a href="{safe_url}" target="_blank" rel="noopener noreferrer">打开附件</a>'
-                        f'</div>'
-                        f'</div>'
-                    )
-        except Exception:
-            first_file_img = ''
-
-        if first_file_img:
-            tooltip_content = tooltip_content + first_file_img
-
         # 构建 query 单元格内的内容：如果存在附件，左侧显示小图标（hover 仅显示图片），同时保留整行的详细 tooltip
-        query_cell_inner = f"{request.query or ''}"
+        query_text = request.query or ''
+        img_icon_html = ''
         try:
             files_check = getattr(request, 'files', None)
             if files_check and isinstance(files_check, list) and len(files_check) > 0 and isinstance(files_check[0], str) and files_check[0].strip():
@@ -1131,7 +1095,6 @@ def print_nlp_request_html(nlp_requests: List[NlpRequest], filename: str = "nlp_
                     f'<span class="imgtooltip"><img src="{img_url}" alt="attachment"/></span>'
                     f'</span>'
                 )
-                query_cell_inner = img_icon_html + query_cell_inner
         except Exception:
             pass
 
@@ -1144,7 +1107,10 @@ def print_nlp_request_html(nlp_requests: List[NlpRequest], filename: str = "nlp_
                     <td><div class="tooltip"><div class="cell-content">{request.glass_device_id or ''}</div><span class="tooltiptext">{tooltip_content}</span></div></td>
                     <td><div class="tooltip"><div class="cell-content">{str(request.glass_product)}</div><span class="tooltiptext">{tooltip_content}</span></div></td>
                     <td><div class="tooltip"><div class="cell-content">{location_str}</div><span class="tooltiptext">{tooltip_content}</span></div></td>
-                    <td class="query-cell"><div class="tooltip"><div class="cell-content">{query_cell_inner}</div><span class="tooltiptext">{tooltip_content}</span></div></td>
+                    <td class="query-cell">
+                        {img_icon_html}
+                        <div class="tooltip"><div class="cell-content">{query_text}</div><span class="tooltiptext">{tooltip_content}</span></div>
+                    </td>
                 </tr>
 '''
 
@@ -1152,6 +1118,61 @@ def print_nlp_request_html(nlp_requests: List[NlpRequest], filename: str = "nlp_
             </tbody>
         </table>
     </div>
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        function positionTooltip(container, tooltip) {
+            // Make it visible to calculate dimensions
+            tooltip.style.visibility = 'visible';
+            tooltip.style.opacity = '1';
+
+            const rect = tooltip.getBoundingClientRect();
+
+            // Reset styles
+            tooltip.style.bottom = '125%';
+            tooltip.style.top = 'auto';
+            tooltip.style.transform = 'translateX(-50%)';
+
+            // Check vertical overflow
+            if (rect.top < 0) {
+                // Reposition below the element if it overflows top
+                tooltip.style.bottom = 'auto';
+                tooltip.style.top = '125%';
+            }
+
+            // Re-check after repositioning
+            const finalRect = tooltip.getBoundingClientRect();
+            if (finalRect.bottom > window.innerHeight) {
+                    // If it still overflows (e.g., large tooltip), adjust further
+                    tooltip.style.top = 'auto';
+                    tooltip.style.bottom = '100%';
+            }
+        }
+
+        const tableTooltips = document.querySelectorAll('.tooltip');
+        tableTooltips.forEach(container => {
+            const tooltip = container.querySelector('.tooltiptext');
+            if (!tooltip) return;
+
+            container.addEventListener('mouseover', () => positionTooltip(container, tooltip));
+            container.addEventListener('mouseout', () => {
+                tooltip.style.visibility = 'hidden';
+                tooltip.style.opacity = '0';
+            });
+        });
+
+        const imgIcons = document.querySelectorAll('.img-icon');
+        imgIcons.forEach(container => {
+            const tooltip = container.querySelector('.imgtooltip');
+            if (!tooltip) return;
+
+            container.addEventListener('mouseover', () => positionTooltip(container, tooltip));
+            container.addEventListener('mouseout', () => {
+                tooltip.style.visibility = 'hidden';
+                tooltip.style.opacity = '0';
+            });
+        });
+    });
+    </script>
 </body>
 </html>
 """
