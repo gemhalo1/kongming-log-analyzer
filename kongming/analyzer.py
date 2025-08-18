@@ -2,13 +2,6 @@ import json
 
 from .constants import CLEAN_CONTEXT_MAGIC_STRING
 
-def is_json_seriable(x):
-    try:
-        _ = json.dumps(x)
-        return True
-    except:
-        return False
-
 
 class KongmingLogAnalyzer(object):
     def __init__(self):
@@ -29,183 +22,6 @@ class KongmingLogAnalyzer(object):
 
         return False
 
-    def pre_process_record(self, record):
-        src = record['_source']
-
-        laname = src.get('laname', '')
-
-        for remove_key in ['_ignored', '_score', '_type', 'sort']:
-            if remove_key in record:
-                del record[remove_key]
-
-        for remove_key in ['messageobj', 'log', 'input', 'lmt', 'level', 'fields', 'class', 'lblpl', 'lnode', 'lenv', 'type', 'sort']:
-            if remove_key in src:
-                del src[remove_key]
-
-        if 'message' in src and isinstance(src['message'], str):
-            try:
-                msg = src['message']
-
-                if ',---headers' in msg:
-                    splits = msg.split(',---headers')
-                    msg = splits[0]
-                    src['message'] = msg
-                    src['headers'] = splits[1]
-
-                    try:
-                        src['headers'] = eval(splits[1])
-                    except:
-                        pass
-
-                for prefix in ['调用魅族服务结束，返回结果:',
-                            'asr-result:',
-                            'upload request:',
-                            'upload result:',
-                            'receive request:',
-                            'start normalize-slot:',
-                            'summary request:',
-                            'deal request:',
-                            'post  body ',
-                            ' nlp _result:',
-                            'todos request:',
-                            '数据库中 asrRecord:',
-                            "合规账号查询结果响应:",
-                            '收到数据',
-                            '合规文本请求',
-                            '合规文本响应',
-                            '合规图片响应',
-                            'tts 请求 数据',
-                            'answers  response:',
-                            'answer request params:',
-                            'start request:',
-                            'matched normalize-slot:',
-                            'received client request text: ',
-                            'current instruction info is:',
-                            'global_ml_response:',
-                            'upload stkscontext request:',
-                            'global request :metadata ',
-                            'global_rule_response: ',
-                            'longtail_rule_response: ',
-                            'hinter request params:',
-                            'received speech vad0 info, send to client vad mid result, msg: ',
-                            'say visible v2 start, request:',
-                            'speech client onMessage received: ']:
-                    if msg.startswith(prefix):
-                        msg = msg[len(prefix):]
-                        src['message.prefix'] = prefix
-                        break
-                src['message'] = msg
-
-                for postfix in [',从发首包到收到结果耗时:', 
-                                ',version is:', 
-                                ',domain:weather',
-                                '-- 耗时:',
-                                ' 耗时:',
-                                ',耗时:',
-                                ',耗时：',
-                                ', latency=',
-                                ',url:',
-                                ',session:',
-                                ',url:http://myvu-rule.xr-nbs.svc.cluster.local']:
-                    if postfix in msg:
-                        pos = msg.index(postfix)
-                        src['message.postfix'] = msg[pos:]
-                        msg = msg[:pos]
-
-                        break
-
-                src['message'] = msg
-
-                msg = json.loads(msg)
-
-                if type(msg) == str:
-                    # 可能是又嵌套了一层的json, 例如central-manager的合规文本响应
-                    try:
-                        msg = json.loads(msg)
-                    except Exception as e:
-                        print(e)
-
-                if isinstance(msg, dict):
-                    x = msg.get('msg')
-                    if isinstance(x, str):
-                        if '<HTTPStatus.OK: 200>' in x:
-                            x = x.replace('<HTTPStatus.OK: 200>', '200')
-                        if '<Response [200]>' in x:
-                            x = x.replace('<Response [200]>', '200')
-
-                        msg['msg'] = x
-
-                        if not x.startswith('parse request'): # badcase from laname:'dlg-dm-glasses'
-                            for prefix in ['response: ',
-                                            'got query embedding: ', 
-                                            'tokenizer inputs: ',
-                                            'load profile succeed: ',
-                                            'Get request: ',
-                                            'Chitchat Skill response: ',
-                                            'multi_answers：',
-                                            'Chitchat Parse response:',
-                                            'past context info: ',
-                                            'base multi parse request, nlu_info: ',
-                                            'save profile to redis succeed! profile info: ',
-                                            "{'get_dify_global_todos response: 200, text:",
-                                        ]:
-                                if x.startswith(prefix):
-                                    x = x[len(prefix):]
-
-                                    if prefix == "{'get_dify_global_todos response: 200, text:":
-                                        x = x[:-2]
-
-                                    msg['msg'] = x
-                                    msg['msg.prefix'] = prefix
-
-                                    break
-
-                            for postfix in ['， new_key=',
-                                            ', business_state:']:
-                                if postfix in x:
-                                    pos = x.index(postfix)
-                                    msg['msg.postfix'] = x[pos:]
-                                    x = x[:pos]
-                                    msg['msg'] = x
-                                    break
-
-                            try:
-                                x = eval(x)
-
-                                if is_json_seriable(x):
-                                    msg['msg'] = x
-                            except Exception as e:
-                                # print('++++', x)
-                                # print('===> ', e)
-                                pass
-
-                    for key in ['result']:
-                        try:
-                            msg[key] = json.loads(msg[key])
-                        except:
-                            pass
-
-                src['message'] = msg
-            except Exception as e:
-                pass
-
-        for key in ['asr-recognize-start',
-                    'asr-recognize-result',
-                    'api-server-request',
-                    'api-server-response', 
-                    'central-nlp-request',
-                    'central-nlp-response',
-                    'central-hinter-request',
-                    'central-hinter-response',
-                    'central-answer-request',
-                    'central-answer-response'
-                    ]:
-            try:
-                src[key] = json.loads(src[key])
-            except:
-                pass
-
-        return record
 
     def get_trace_id(self, record):
         src = record['_source']
@@ -235,8 +51,6 @@ class KongmingLogAnalyzer(object):
             if self.shall_ignore(record):
                 ignored.append(record_id)
             else:
-                record = self.pre_process_record(record)
-
                 src = record['_source']
                 trace_id = self.get_trace_id(record) #  src.get('trace_id') or src.get('traceId') or ''
 

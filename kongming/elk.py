@@ -37,74 +37,79 @@ def Message(x):
 
 
 class NlpRequest(object):
-    def __init__(self, record):
-        self.record = record
+    def __init__(self, nlp_request, nlp_response=None):
+        self.nlp_request = nlp_request
+        self.nlp_response = nlp_response
 
     @property
     def location(self):
-        return self.record['central-nlp-request']['metadata']['longitude'], self.record['central-nlp-request']['metadata']['latitude']
+        return self.nlp_request['central-nlp-request']['metadata']['longitude'], self.nlp_request['central-nlp-request']['metadata']['latitude']
     
     @property
     def account_id(self):
-        return self.record['central-nlp-request']['metadata']['accountId']
+        return self.nlp_request['central-nlp-request']['metadata']['accountId']
 
     @property
     def xj_account_id(self):
-        return self.record['central-nlp-request']['metadata']['xjAccountId']
+        return self.nlp_request['central-nlp-request']['metadata']['xjAccountId']
 
     @property
     def files(self):
-        files = self.record['central-nlp-request'].get('files')
+        files = self.nlp_request['central-nlp-request'].get('files')
         if isinstance(files, list):
             return [file['ossUrl'] for file in files if 'ossUrl' in file]
         return None
 
     @property
     def device_id(self):
-        return self.record['central-nlp-request']['metadata']['deviceId']
+        return self.nlp_request['central-nlp-request']['metadata']['deviceId']
 
     @property
     def glass_device_id(self):
-        return self.record['central-nlp-request']['metadata']['glassDeviceId']
+        return self.nlp_request['central-nlp-request']['metadata']['glassDeviceId']
 
     @property
     def iot_device_id(self):
-        return self.record['central-nlp-request']['metadata']['iotDeviceId']
+        return self.nlp_request['central-nlp-request']['metadata']['iotDeviceId']
 
     @property
     def glass_product(self):
-        return self.record['central-nlp-request']['metadata']['glassProduct']
+        return self.nlp_request['central-nlp-request']['metadata']['glassProduct']
 
     @property
     def function_type(self):
-        return self.record['central-nlp-request']['metadata']['functionType']
+        return self.nlp_request['central-nlp-request']['metadata']['functionType']
 
     @property
     def origin_type(self):
-        return self.record['central-nlp-request']['metadata']['originType']
+        return self.nlp_request['central-nlp-request']['metadata']['originType']
 
     @property
     def session_id(self):
-        return self.record['central-nlp-request']['metadata']['sessionId']
+        return self.nlp_request['central-nlp-request']['metadata']['sessionId']
 
     @property
     def trace_id(self):
-        return self.record['central-nlp-request']['metadata']['terminalTraceId']
+        return self.nlp_request['central-nlp-request']['metadata']['terminalTraceId']
 
     @property
     def time_zone(self):
-        return self.record['central-nlp-request']['metadata']['timeZone']
+        return self.nlp_request['central-nlp-request']['metadata']['timeZone']
 
     @property
     def query(self):
-        q = self.record['central-nlp-request']['payload']['q']
+        q = self.nlp_request['central-nlp-request']['payload']['q']
         return q if q != CLEAN_CONTEXT_MAGIC_STRING else '<清除上下文>'
-
-
     @property
     def timestamp(self):
-        return self.record['ltime']
+        return self.nlp_request['ltime']
 
+    @property
+    def intent(self):
+        if self.nlp_response is not None:
+            header = self.nlp_response['central-nlp-response']['payload']['header']
+            return (header['namespace'], header['name'])
+        return None
 class KongmingELKServer(object):
     DEFAUL_EXCLUDE_FIELDS = ["messageobj","log","level","fields","input","lblpl","lmt","class"]
 
@@ -123,6 +128,197 @@ class KongmingELKServer(object):
             'Content-Type': 'application/json',
             'kbn-xsrf': 'kibana'
         }
+
+    def transform_record(self, record):
+        src = record['_source']
+
+        def is_json_seriable(x):
+            try:
+                _ = json.dumps(x)
+                return True
+            except:
+                return False
+
+
+        for remove_key in ['_ignored', '_score', '_type', 'sort']:
+            if remove_key in record:
+                del record[remove_key]
+
+        for remove_key in ['messageobj', 'log', 'input', 'lmt', 'level', 'fields', 'class', 'lblpl', 'lnode', 'lenv', 'type', 'sort']:
+            if remove_key in src:
+                del src[remove_key]
+
+        if 'message' in src and isinstance(src['message'], str):
+            try:
+                msg = src['message']
+
+                if ',---headers' in msg:
+                    splits = msg.split(',---headers')
+                    msg = splits[0]
+                    src['message'] = msg
+                    src['headers'] = splits[1]
+
+                    try:
+                        src['headers'] = eval(splits[1])
+                    except:
+                        pass
+
+                # TODO: support regex prefix
+                #.   'start rule match:{query},domain:'
+                #.   'get context payload traceId:{trace_id}, response:'
+                #.   'music {query} response: '
+                for prefix in ['调用魅族服务结束，返回结果:',
+                            'asr-result:',
+                            'music_rule_response: ',
+                            'phonecall_rule_response: ',
+                            'music_ml_response: ',
+                            'upload request:',
+                            'upload result:',
+                            'receive request:',
+                            'start normalize-slot:',
+                            'summary request:',
+                            'deal request:',
+                            'post  body ',
+                            ' nlp _result:',
+                            'todos request:',
+                            '数据库中 asrRecord:',
+                            "合规账号查询结果响应:",
+                            '收到数据',
+                            '合规文本请求',
+                            '合规文本响应',
+                            '合规图片响应',
+                            'tts 请求 数据',
+                            'answers  response:',
+                            'answer request params:',
+                            'start request:',
+                            'matched normalize-slot:',
+                            'received client request text: ',
+                            'current instruction info is:',
+                            'global_ml_response:',
+                            'upload stkscontext request:',
+                            'global request :metadata ',
+                            'global_rule_response: ',
+                            'longtail_rule_response: ',
+                            'hinter request params:',
+                            'received speech vad0 info, send to client vad mid result, msg: ',
+                            'say visible v2 start, request:',
+                            'speech client onMessage received: ']:
+                    if msg.startswith(prefix):
+                        msg = msg[len(prefix):]
+                        src['message.prefix'] = prefix
+                        break
+                src['message'] = msg
+
+                for postfix in [',从发首包到收到结果耗时:', 
+                                ',version is:', 
+                                ',domain:weather',
+                                '-- 耗时:',
+                                ' 耗时:',
+                                ',耗时:',
+                                ',耗时：',
+                                ', latency=',
+                                ',url:',
+                                ',session:',
+                                ',url:http://myvu-rule.xr-nbs.svc.cluster.local']:
+                    if postfix in msg:
+                        pos = msg.index(postfix)
+                        src['message.postfix'] = msg[pos:]
+                        msg = msg[:pos]
+
+                        break
+
+                src['message'] = msg
+
+                msg = json.loads(msg)
+
+                if type(msg) == str:
+                    # 可能是又嵌套了一层的json, 例如central-manager的合规文本响应
+                    try:
+                        msg = json.loads(msg)
+                    except Exception as e:
+                        print(e)
+
+                if isinstance(msg, dict):
+                    x = msg.get('msg')
+                    if isinstance(x, str):
+                        if '<HTTPStatus.OK: 200>' in x:
+                            x = x.replace('<HTTPStatus.OK: 200>', '200')
+                        if '<Response [200]>' in x:
+                            x = x.replace('<Response [200]>', '200')
+
+                        msg['msg'] = x
+
+                        if not x.startswith('parse request'): # badcase from laname:'dlg-dm-glasses'
+                            for prefix in ['response: ',
+                                            'got query embedding: ', 
+                                            'tokenizer inputs: ',
+                                            'load profile succeed: ',
+                                            'Get request: ',
+                                            'Chitchat Skill response: ',
+                                            'multi_answers：',
+                                            'Chitchat Parse response:',
+                                            'past context info: ',
+                                            'base multi parse request, nlu_info: ',
+                                            'save profile to redis succeed! profile info: ',
+                                            "{'get_dify_global_todos response: 200, text:",
+                                        ]:
+                                if x.startswith(prefix):
+                                    x = x[len(prefix):]
+
+                                    if prefix == "{'get_dify_global_todos response: 200, text:":
+                                        x = x[:-2]
+
+                                    msg['msg'] = x
+                                    msg['msg.prefix'] = prefix
+
+                                    break
+
+                            for postfix in ['， new_key=',
+                                            ', business_state:']:
+                                if postfix in x:
+                                    pos = x.index(postfix)
+                                    msg['msg.postfix'] = x[pos:]
+                                    x = x[:pos]
+                                    msg['msg'] = x
+                                    break
+
+                            try:
+                                x = eval(x)
+
+                                if is_json_seriable(x):
+                                    msg['msg'] = x
+                            except Exception as e:
+                                # print('++++', x)
+                                # print('===> ', e)
+                                pass
+
+                    for key in ['result']:
+                        try:
+                            msg[key] = json.loads(msg[key])
+                        except:
+                            pass
+
+                src['message'] = msg
+            except Exception as e:
+                pass
+
+        for key in ['asr-recognize-start',
+                    'asr-recognize-result',
+                    'api-server-request',
+                    'api-server-response', 
+                    'central-nlp-request',
+                    'central-nlp-response',
+                    'central-hinter-request',
+                    'central-hinter-response',
+                    'central-answer-request',
+                    'central-answer-response'
+                    ]:
+            try:
+                src[key] = json.loads(src[key])
+            except:
+                pass
+
+        return record
 
     def _run_query(self, 
                    request_body:Dict[str, Any], 
@@ -149,7 +345,8 @@ class KongmingELKServer(object):
                     response = httpx.post(self.url, auth=self.auth, headers=self.headers, json=request_body)
                     res_json = response.json()
                     records += res_json['hits']['hits']
-        return records
+
+        return [self.transform_record(r) for r in records]
 
     def query_nlp_request(self, 
                         timestamp_begin:Union[str,None]=None,
@@ -160,12 +357,23 @@ class KongmingELKServer(object):
         """ 查询所有central-manager收到的nlp请求，通过检查"central-nlp-request"字段是否存在来判断
         """
 
+        # TODO: 搜索 "central-answer-request"和"central-answer-response"
+        #.  清除上下文的nlp请求可以忽略掉，因为其会伴随大模型请求
+
         must_clause = [
                         {
-                            "exists": {
-                                "field": "central-nlp-request"
+                            "bool": {
+                                "should": [
+                                    {
+                                        "exists": { "field": "central-nlp-request" }
+                                    },
+                                    {
+                                        "exists": { "field": "central-nlp-response" }
+                                    },
+                                ],
+                                "minimum_should_match": 1
                             }
-                        },
+                        }
                     ]
 
         if timestamp_begin:
@@ -213,7 +421,13 @@ class KongmingELKServer(object):
 
         records = self._run_query(request_body=request_body, size=size, pagesize=pagesize, out_file=out_file)
 
-        nlp_requests = [NlpRequest(r['_source']) for r in records]
+        nlp_requests = [r for r in records if 'central-nlp-request' in r['_source']]
+        nlp_response = [r for r in records if 'central-nlp-response' in r['_source']]
+        response_map = {
+            r['_source']['traceId']:r for r in nlp_response
+        }
+
+        nlp_requests = [NlpRequest(r['_source'], response_map.get(r['_source']['traceId'], {}).get('_source')) for r in nlp_requests]
 
         return records, nlp_requests
     def query_by_phrase(self, 
@@ -334,5 +548,5 @@ class KongmingELKServer(object):
 
         return self._run_query(request_body=request_body, size=size, pagesize=pagesize, out_file=out_file)
 
-    def query_by_trace_id(self, trace_id:str, env:str="uat", size:int=10000, pagesize:int=10, out_file:Union[str,None]=None):
-        return self.query_by_phrase(trace_id, env=env, size=size, pagesize=pagesize, out_file=out_file)
+    def query_by_trace_id(self, trace_id:str, size:int=10000, pagesize:int=10, out_file:Union[str,None]=None):
+        return self.query_by_phrase(trace_id, size=size, pagesize=pagesize, out_file=out_file)

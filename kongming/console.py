@@ -20,10 +20,11 @@ def print_nlp_request_table(nlp_requests: List[NlpRequest]):
     table.add_column("No.", style="dim", no_wrap=True)  # 序号列
     table.add_column("Timestamp", style="dim", no_wrap=True)  # 不换行
     # table.add_column("Session ID", width=36)
-    table.add_column("Trace ID", width=36)
+    table.add_column("Trace ID", no_wrap=True)
     # table.add_column("Account ID", width=15)
-    table.add_column("Device ID", width=36)
-    table.add_column("Query", width=50)
+    table.add_column("Device ID", no_wrap=True)
+    table.add_column("Query", width=30)
+    table.add_column("Intent", no_wrap=True)
     
     # 添加行数据
     for idx, request in enumerate(nlp_requests, 1):  # 序号从1开始
@@ -35,6 +36,7 @@ def print_nlp_request_table(nlp_requests: List[NlpRequest]):
             # request.account_id or "",
             request.device_id or "",
             request.query or "",
+            '::'.join(request.intent) if request.intent else ""
         )
     
     # 打印表格
