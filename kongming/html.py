@@ -1,5 +1,5 @@
 from typing import List
-from .elk import NlpRequest
+
 def print_nlp_request_html(nlp_requests: List[NlpRequest], filename: str = "nlp_requests.html"):
     """
     将NlpRequest列表输出到HTML文件中的表格

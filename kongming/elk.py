@@ -1,8 +1,10 @@
 import httpx
 import json
 from tqdm import tqdm
-from typing import List, Union, Dict, Any
+from typing import List, Union, Dict, Any, Optional, Tuple, Any, Literal
 from .constants import CLEAN_CONTEXT_MAGIC_STRING
+from .model import DialogLogFilter, DialogRound, Location, NLPRound, LLMRound, NLPIntent, NLPUtterance, OssFile
+
 
 null = None
 true = True
@@ -36,98 +38,29 @@ def Message(x):
     return x
 
 
-class NlpRequest(object):
-    def __init__(self, nlp_request, nlp_response=None):
-        self.nlp_request = nlp_request
-        self.nlp_response = nlp_response
+KongmingEnvironmentType = Literal['uat', 'prod', 'fat']
 
-    @property
-    def location(self):
-        return self.nlp_request['central-nlp-request']['metadata']['longitude'], self.nlp_request['central-nlp-request']['metadata']['latitude']
-    
-    @property
-    def account_id(self):
-        return self.nlp_request['central-nlp-request']['metadata']['accountId']
-
-    @property
-    def xj_account_id(self):
-        return self.nlp_request['central-nlp-request']['metadata']['xjAccountId']
-
-    @property
-    def files(self):
-        files = self.nlp_request['central-nlp-request'].get('files')
-        if isinstance(files, list):
-            return [file['ossUrl'] for file in files if 'ossUrl' in file]
-        return None
-
-    @property
-    def device_id(self):
-        return self.nlp_request['central-nlp-request']['metadata']['deviceId']
-
-    @property
-    def glass_device_id(self):
-        return self.nlp_request['central-nlp-request']['metadata']['glassDeviceId']
-
-    @property
-    def iot_device_id(self):
-        return self.nlp_request['central-nlp-request']['metadata']['iotDeviceId']
-
-    @property
-    def glass_product(self):
-        return self.nlp_request['central-nlp-request']['metadata']['glassProduct']
-
-    @property
-    def function_type(self):
-        return self.nlp_request['central-nlp-request']['metadata']['functionType']
-
-    @property
-    def origin_type(self):
-        return self.nlp_request['central-nlp-request']['metadata']['originType']
-
-    @property
-    def session_id(self):
-        return self.nlp_request['central-nlp-request']['metadata']['sessionId']
-
-    @property
-    def trace_id(self):
-        return self.nlp_request['central-nlp-request']['metadata']['terminalTraceId']
-
-    @property
-    def time_zone(self):
-        return self.nlp_request['central-nlp-request']['metadata']['timeZone']
-
-    @property
-    def query(self):
-        q = self.nlp_request['central-nlp-request']['payload']['q']
-        return q if q != CLEAN_CONTEXT_MAGIC_STRING else '<清除上下文>'
-    @property
-    def timestamp(self):
-        return self.nlp_request['ltime']
-
-    @property
-    def intent(self):
-        if self.nlp_response is not None:
-            header = self.nlp_response['central-nlp-response']['payload']['header']
-            return (header['namespace'], header['name'])
-        return None
 class KongmingELKServer(object):
     DEFAUL_EXCLUDE_FIELDS = ["messageobj","log","level","fields","input","lblpl","lmt","class"]
 
     def __init__(self, server="https://elk.xjsdtech.com", 
                  username="ai", 
                  password="ai@123456", 
-                 env:str="uat",
+                 env:KongmingEnvironmentType="uat",
                  exclude_fields:Union[List[str],None]=None):
         self.server=server
         self.auth = (username, password)
         self.exclude_fields = exclude_fields or KongmingELKServer.DEFAUL_EXCLUDE_FIELDS
 
-        self.url = f'{self.server}/s/ai/api/console/proxy?path={env}-kongming-%2A%2F_search&method=GET'
+        self.url = self._format_url(env)
 
         self.headers = {
             'Content-Type': 'application/json',
             'kbn-xsrf': 'kibana'
         }
+
+    def _format_url(self, env:KongmingEnvironmentType)->str:
+        return f'{self.server}/s/ai/api/console/proxy?path={env}-kongming-%2A%2F_search&method=GET'
 
     def transform_record(self, record):
         src = record['_source']
@@ -324,8 +257,11 @@ class KongmingELKServer(object):
                    request_body:Dict[str, Any], 
                    size:int,
                    pagesize:int,
-                   out_file:Union[str,None]=None):
-        response = httpx.post(self.url, auth=self.auth, headers=self.headers, json=request_body)
+                   env:Optional[KongmingEnvironmentType]=None,
+                   out_file:Optional[str]=None):
+        url = self._format_url(env) if env else self.url
+
+        response = httpx.post(url, auth=self.auth, headers=self.headers, json=request_body, timeout=20)
         records = []
 
         if response.status_code == 200:
@@ -342,47 +278,51 @@ class KongmingELKServer(object):
                 for offset in tqdm(range(pagesize, min(size, hits_total), pagesize)):
                     request_body['from'] = offset
                     request_body['size'] = pagesize
-                    response = httpx.post(self.url, auth=self.auth, headers=self.headers, json=request_body)
+                    response = httpx.post(url, auth=self.auth, headers=self.headers, json=request_body)
                     res_json = response.json()
                     records += res_json['hits']['hits']
 
+        # print(json.dumps(request_body, indent=2, ensure_ascii=False))
         return [self.transform_record(r) for r in records]
 
-    def query_nlp_request(self, 
-                        timestamp_begin:Union[str,None]=None,
-                        timestamp_end:Union[str,None]=None,
-                        size:int=10000,
-                        pagesize:int=10,
-                        out_file:Union[str,None]=None):
-        """ 查询所有central-manager收到的nlp请求，通过检查"central-nlp-request"字段是否存在来判断
-        """
-
-        # TODO: 搜索 "central-answer-request"和"central-answer-response"
-        #.  清除上下文的nlp请求可以忽略掉，因为其会伴随大模型请求
-
+    def query_dialogs(self, 
+                      filter: DialogLogFilter, 
+                      size:int=10000, 
+                      pagesize:int=1000, 
+                      env:Optional[KongmingEnvironmentType]=None,
+                      out_file:Optional[str]=None
+                    ) -> Tuple[Dict[str,Any],List[DialogRound]]:
+        fields = ["central-nlp-request", "central-nlp-response", "central-answer-request", "central-answer-response"]
         must_clause = [
                         {
                             "bool": {
                                 "should": [
                                     {
-                                        "exists": { "field": "central-nlp-request" }
-                                    },
-                                    {
-                                        "exists": { "field": "central-nlp-response" }
-                                    },
+                                        "exists": { "field": field }
+                                    } for field in fields
                                 ],
                                 "minimum_should_match": 1
                             }
                         }
                     ]
 
-        if timestamp_begin:
-            if  timestamp_end:
+        if filter.phrase:
+            must_clause.append(                        {
+                            "multi_match": {
+                                "query": f"{filter.phrase}",
+                                "type": "phrase",
+                                "fields": fields
+                            }
+            })
+
+
+        if filter.timestamp_begin:
+            if  filter.timestamp_end:
                 must_clause.append({
                     "range": {
                         "@timestamp": {
-                            "gte": timestamp_begin,
-                            "lt":  timestamp_end,
+                            "gte": filter.timestamp_begin,
+                            "lt":  filter.timestamp_end,
                         }
                     }
                 })
@@ -390,18 +330,39 @@ class KongmingELKServer(object):
                 must_clause.append({
                     "range": {
                         "@timestamp": {
-                            "gte": timestamp_begin,
+                            "gte": filter.timestamp_begin,
                         }
                     }
                 })
-        elif timestamp_end:
+        elif filter.timestamp_end:
                 must_clause.append({
                     "range": {
                         "@timestamp": {
-                            "lt":  timestamp_end,
+                            "lt":  filter.timestamp_end,
                         }
                     }
                 })
+
+        if filter.glass_product is not None:
+            must_clause.append({
+                "multi_match": {
+                "query": f"\"glassProduct\":\"{filter.glass_product}\"",
+                "type": "phrase",
+                "fields": fields
+                }
+            })
+
+        if filter.id_type and filter.id_value:
+            must_clause.append({
+                "multi_match": {
+                "query": f"\"{filter.id_type}\":\"{filter.id_value}\"",
+                "type": "phrase",
+                "fields": fields
+                }
+            })
+
+        # 对每个trace_id, 实际可能搜到4条或６条 (两次nlp请求+响应，１次llm请求+响应)，这里放大到８倍
+        query_size = min(size * 8, 10000)
 
         request_body = {
             "query": {
@@ -410,7 +371,7 @@ class KongmingELKServer(object):
                 }
             },
             "from": 0,
-            "size": pagesize,
+            "size": query_size,
             "sort": [
                 { "@timestamp": "asc" }
             ],
@@ -419,26 +380,52 @@ class KongmingELKServer(object):
             }
         }
 
-        records = self._run_query(request_body=request_body, size=size, pagesize=pagesize, out_file=out_file)
+        # print(json.dumps(request_body, indent=2, ensure_ascii=False ))
+        records = self._run_query(request_body=request_body, size=query_size, pagesize=pagesize, env=env, out_file=out_file)
 
-        nlp_requests = [r for r in records if 'central-nlp-request' in r['_source']]
-        nlp_response = [r for r in records if 'central-nlp-response' in r['_source']]
-        response_map = {
-            r['_source']['traceId']:r for r in nlp_response
-        }
+        traceid_round_map = {}
+        for r in records:
+            traceId = r['_source']['traceId']
+            if traceId not in traceid_round_map:
+                traceid_round_map[traceId] = {
+                    'nlp_request': None,
+                    'nlp_response': None,
+                    'llm_request': None,
+                    'llm_response': None
+                }
 
-        nlp_requests = [NlpRequest(r['_source'], response_map.get(r['_source']['traceId'], {}).get('_source')) for r in nlp_requests]
+            # 在大模型请求时，同一个traceId可能会有２个NLU请求，第二个通话是清除上下文的动作，因此如果已经有第一个消息了，就不要再存入map
+            if 'central-nlp-request' in r['_source']:
+                if traceid_round_map[traceId].get('nlp_request') is None:
+                    traceid_round_map[traceId]['nlp_request'] = r
+            elif 'central-nlp-response' in r['_source']:
+                if traceid_round_map[traceId].get('nlp_request') is not None and traceid_round_map[traceId].get('nlp_response') is None:
+                    traceid_round_map[traceId]['nlp_response'] = r
+            elif 'central-answer-request' in r['_source']:
+                traceid_round_map[traceId]['llm_request'] = r
+            elif 'central-answer-response' in r['_source']:
+                traceid_round_map[traceId]['llm_response'] = r
 
-        return records, nlp_requests
+        rounds:List[DialogRound] = []
+
+        for traceId in traceid_round_map:
+            round = DialogRound.from_records(**traceid_round_map[traceId])
+            rounds.append(round)
+
+        if len(rounds) > size:
+            rounds = rounds[:size]
+
+        return records, rounds
     def query_by_phrase(self, 
                         match_phrase:str,
                         match_fields:List[str]=["*"],
                         terms:Union[Dict[str,Any],None]=None,
-                        timestamp_begin:Union[str,None]=None,
-                        timestamp_end:Union[str,None]=None,
+                        timestamp_begin:Optional[str]=None,
+                        timestamp_end:Optional[str]=None,
                         size:int=10000,
                         pagesize:int=10,
-                        out_file:Union[str,None]=None):
+                        env:Optional[KongmingEnvironmentType]=None,
+                        out_file:Optional[str]=None):
         must_clause = [
                         {
                             "multi_match": {
@@ -457,7 +444,7 @@ class KongmingELKServer(object):
                     "range": {
                         "@timestamp": {
                             "gte": timestamp_begin,
-                            "lt":  "timestamp_end",
+                            "lt":  timestamp_end,
                         }
                     }
                 })
@@ -473,7 +460,7 @@ class KongmingELKServer(object):
                 must_clause.append({
                     "range": {
                         "@timestamp": {
-                            "lt":  "timestamp_end",
+                            "lt":  timestamp_end,
                         }
                     }
                 })
@@ -546,7 +533,97 @@ class KongmingELKServer(object):
             }
         }
 
-        return self._run_query(request_body=request_body, size=size, pagesize=pagesize, out_file=out_file)
 
-    def query_by_trace_id(self, trace_id:str, size:int=10000, pagesize:int=10, out_file:Union[str,None]=None):
-        return self.query_by_phrase(trace_id, size=size, pagesize=pagesize, out_file=out_file)
+        return self._run_query(request_body=request_body, size=size, pagesize=pagesize, env=env, out_file=out_file)
+
+
+    def query_by_time_range(self, 
+                        timestamp_begin:Optional[str]=None,
+                        timestamp_end:Optional[str]=None,
+                        size:int=10000,
+                        pagesize:int=10,
+                        env:Optional[KongmingEnvironmentType]=None,
+                        out_file:Optional[str]=None):
+        if timestamp_begin is None and timestamp_end is None:
+            return None
+
+        must_clause = []
+
+        if timestamp_begin:
+            if  timestamp_end:
+                must_clause.append({
+                    "range": {
+                        "@timestamp": {
+                            "gte": timestamp_begin,
+                            "lt":  timestamp_end,
+                        }
+                    }
+                })
+            else:
+                must_clause.append({
+                    "range": {
+                        "@timestamp": {
+                            "gte": timestamp_begin,
+                        }
+                    }
+                })
+        elif timestamp_end:
+                must_clause.append({
+                    "range": {
+                        "@timestamp": {
+                            "lt":  timestamp_end,
+                        }
+                    }
+                })
+
+
+        request_body = {
+            "query": {
+                "bool": {
+                    "must": must_clause
+                }
+            },
+            "from": 0,
+            "size": pagesize,
+            "sort": [
+                { "@timestamp": "asc" }
+            ],
+            "_source": {
+                "excludes": self.exclude_fields
+            }
+        }
+
+        return self._run_query(request_body=request_body, size=size, pagesize=pagesize, env=env, out_file=out_file)
+
+    def query_dialog_by_trace_id(self, trace_id:str, env:Optional[KongmingEnvironmentType]=None, out_file:Optional[str]=None):
+        from .utils import adjust_timestamp
+
+        filter = DialogLogFilter(phrase=trace_id)
+
+        records, rounds = self.query_dialogs(filter, size=1, pagesize=10, env=env, out_file=None)
+
+        if rounds:
+            round = rounds[0]
+            start_time = round.nlp_round.request_timestamp
+            stop_time = round.llm_round.response_timestamp if (round.llm_round and round.llm_round.response_timestamp) else None
+
+            if not stop_time:
+                stop_time = round.nlp_round.response_timestamp if (round.nlp_round and round.nlp_round.response_timestamp) else None
+
+            if start_time and stop_time:
+                start_time = adjust_timestamp(start_time, -15.0)
+                stop_time = adjust_timestamp(stop_time, 2.0)
+
+                records = self.query_by_phrase(timestamp_begin=start_time,
+                                     timestamp_end=stop_time,
+                                     match_phrase=trace_id,
+                                     size=10000,
+                                     pagesize=1000,
+                                     out_file=out_file)
+                
+                return records, rounds
+
+        return None
+
+    def query_by_trace_id(self, trace_id:str, size:int=10000, pagesize:int=10, env:Optional[KongmingEnvironmentType]=None, out_file:Optional[str]=None):
+        return self.query_by_phrase(trace_id, size=size, pagesize=pagesize, env=env, out_file=out_file)
