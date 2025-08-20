@@ -20,11 +20,11 @@ class Location(BaseModel):
         return f'{self.longitude:.5f}, {self.latitude:.5f}'
 
 class OssFile(BaseModel):
-    ossUrl: str
-    resourceName: str
-    resourceOssName: str
-    resourceSize: str
-    resourceType: str
+    ossUrl: Optional[str] = None
+    resourceName: Optional[str] = None
+    resourceOssName: Optional[str] = None
+    resourceSize: Optional[str] = None
+    resourceType: Optional[str] = None
 
 class NLPIntent(BaseModel):
     namespace: str
