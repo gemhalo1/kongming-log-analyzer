@@ -54,7 +54,24 @@ def create_standard_item(text, tooltip=None):
     """Create a QStandardItem with text and optional tooltip"""
     item = QStandardItem(str(text))
     if tooltip:
-        item.setToolTip(str(tooltip))
+        # Format tooltip with line breaks for long text
+        tooltip_text = str(tooltip)
+        if len(tooltip_text) > 80:
+            # Insert line breaks every 80 characters at word boundaries
+            words = tooltip_text.split(' ')
+            lines = []
+            current_line = ''
+            for word in words:
+                if len(current_line + ' ' + word) <= 80:
+                    current_line += (' ' + word) if current_line else word
+                else:
+                    if current_line:
+                        lines.append(current_line)
+                    current_line = word
+            if current_line:
+                lines.append(current_line)
+            tooltip_text = '\n'.join(lines)
+        item.setToolTip(tooltip_text)
     return item
 
 def create_item(text, tooltip=None):
@@ -138,7 +155,7 @@ class LogFilterProxyModel(QSortFilterProxyModel):
             index = self.sourceModel().index(source_row, column_index, source_parent)
             if index.isValid():
                 data = self.sourceModel().data(index)
-                if filter_text.lower() not in str(data).lower():
+                if str(data) != filter_text:  # Exact match instead of substring
                     return False # Mismatch in this column
         return True # All filters passed
 
@@ -337,6 +354,7 @@ class LogAnalyzerApp(QWidget):
         self.table_widget.setModel(self.proxy_model) # Set proxy model to table
         self.table_widget.setEditTriggers(QTableView.EditTrigger.NoEditTriggers) # Disable editing
         self.table_widget.setSelectionBehavior(QTableView.SelectionBehavior.SelectItems) # Allow item selection for copying
+        self.table_widget.setWordWrap(False) # Disable word wrap to keep single line display
 
         self.setup_table_headers() # This will now set headers on data_model
         self.table_widget.doubleClicked.connect(self.handle_cell_double_clicked)
@@ -407,6 +425,11 @@ class LogAnalyzerApp(QWidget):
         self.query_worker.start()
 
     def display_results(self, rounds: List[DialogRound]):
+        # Save current column widths before clearing data
+        column_widths = []
+        for i in range(self.data_model.columnCount()):
+            column_widths.append(self.table_widget.horizontalHeader().sectionSize(i))
+        
         # Clear existing data and reset column count
         self.data_model.clear()
         self.setup_table_headers()  # Reset headers
@@ -439,7 +462,8 @@ class LogAnalyzerApp(QWidget):
                 display_timestamp = ""
             self.data_model.setItem(row_idx, col_idx, create_item(display_timestamp))
             col_idx += 1
-            self.data_model.setItem(row_idx, col_idx, create_item(round.traceId or ""))
+            self.data_model.setItem(row_idx, col_idx, create_item(str(round.traceId) or ""))
+
             col_idx += 1
             self.data_model.setItem(row_idx, col_idx, create_item(str(int(round.glassProduct)) if round.glassProduct else ""))
             col_idx += 1
@@ -549,31 +573,11 @@ class LogAnalyzerApp(QWidget):
             self.data_model.setColumnCount(expected_columns)
             self.setup_table_headers()  # Reset headers again
 
-        self.table_widget.horizontalHeader().resizeSections(QHeaderView.ResizeMode.ResizeToContents)
-        # Set fixed width for specific columns after resizeColumnsToContents
-        fixed_width_columns = {
-            "NLU查询": 250,
-            "NLU回答": 250,
-            "LLM查询": 250,
-            "LLM回答": 250,
-            "照片": 36,
-            "LLM思考": 250,
-            "LLM搜索数据": 250,
-        }
-        headers = []
-        for i in range(self.data_model.columnCount()):
-            header_item = self.data_model.horizontalHeaderItem(i)
-            if header_item:
-                headers.append(header_item.text())
-            else:
-                headers.append(f"Column_{i}")
-        for col_name, width in fixed_width_columns.items():
-            try:
-                col_idx = headers.index(col_name)
-                self.table_widget.horizontalHeader().resizeSection(col_idx, width)
-            except ValueError:
-                pass # Column not found, ignore
-
+        # Restore saved column widths
+        for i, width in enumerate(column_widths):
+            if i < self.data_model.columnCount():
+                self.table_widget.horizontalHeader().resizeSection(i, width)
+        
         self.search_button.setEnabled(True) # Re-enable button
         QApplication.restoreOverrideCursor() # Restore normal cursor
 
@@ -594,47 +598,91 @@ class LogAnalyzerApp(QWidget):
                 self.image_fetcher.start()
 
     def show_filter_dialog(self):
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QComboBox, QListWidget, QListWidgetItem, QPushButton
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem, QPushButton, QTableWidget, QTableWidgetItem
+        from collections import Counter
         
         dialog = QDialog(self)
         dialog.setWindowTitle("Filter Results")
-        dialog.setFixedSize(400, 500)
+        dialog.resize(700, 500)
         
-        layout = QVBoxLayout()
+        main_layout = QVBoxLayout()
+        content_layout = QHBoxLayout()
         
-        # Column selection
-        layout.addWidget(QLabel("Select Column:"))
-        column_combo = QComboBox()
+        # Left side - Column selection
+        left_layout = QVBoxLayout()
+        left_layout.addWidget(QLabel("Columns:"))
+        column_list = QListWidget()
+        column_list.setFixedWidth(200)
+        
         headers = []
         for i in range(self.data_model.columnCount()):
             header_item = self.data_model.horizontalHeaderItem(i)
             if header_item:
                 headers.append(header_item.text())
-                column_combo.addItem(header_item.text())
-        layout.addWidget(column_combo)
+                column_list.addItem(QListWidgetItem(header_item.text()))
         
-        # Value selection
-        layout.addWidget(QLabel("Select Value:"))
-        value_list = QListWidget()
-        value_list.setFixedHeight(300)
-        layout.addWidget(value_list)
+        left_layout.addWidget(column_list)
+        content_layout.addLayout(left_layout)
         
-        # Update values when column changes
+        # Right side - Value table with counts
+        right_layout = QVBoxLayout()
+        right_layout.addWidget(QLabel("Values:"))
+        value_table = QTableWidget()
+        value_table.setColumnCount(2)
+        value_table.setHorizontalHeaderLabels(["Value", "Count"])
+        value_table.setFont(QFont("Courier New", 9))  # Set monospace font
+        value_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        
+        # Set column resize modes
+        header = value_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)  # Value column stretches
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)  # Count column minimal
+        
+        right_layout.addWidget(value_table)
+        content_layout.addLayout(right_layout)
+        
+        main_layout.addLayout(content_layout)
+        
+        # Update values when column selection changes
         def update_values():
-            value_list.clear()
-            column_index = column_combo.currentIndex()
-            if column_index >= 0:
-                unique_values = set()
+            value_table.setRowCount(0)
+            current_item = column_list.currentItem()
+            if current_item:
+                column_index = column_list.row(current_item)
+                values = []
                 for row in range(self.data_model.rowCount()):
                     item = self.data_model.item(row, column_index)
                     if item and item.text().strip():
-                        unique_values.add(item.text())
+                        values.append(item.text())
                 
-                for value in sorted(list(unique_values)):
-                    value_list.addItem(QListWidgetItem(value))
+                # Count occurrences
+                value_counts = Counter(values)
+                
+                # Populate table
+                value_table.setRowCount(len(value_counts))
+                for i, (value, count) in enumerate(sorted(value_counts.items())):
+                    value_table.setItem(i, 0, QTableWidgetItem(value))
+                    count_item = QTableWidgetItem(str(count))
+                    count_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    value_table.setItem(i, 1, count_item)
+                
+                # Select current filter value if exists
+                if column_index in self.proxy_model._filters:
+                    current_filter = self.proxy_model._filters[column_index]
+                    for i in range(value_table.rowCount()):
+                        if value_table.item(i, 0).text() == current_filter:
+                            value_table.selectRow(i)
+                            break
         
-        column_combo.currentIndexChanged.connect(update_values)
-        update_values()  # Initial load
+        column_list.currentItemChanged.connect(lambda: update_values())
+        
+        # Set initial selection if there's an active filter
+        if self.proxy_model._filters:
+            first_filter_column = next(iter(self.proxy_model._filters.keys()))
+            column_list.setCurrentRow(first_filter_column)
+        else:
+            column_list.setCurrentRow(0)
+        update_values()
         
         # Buttons
         button_layout = QHBoxLayout()
@@ -642,10 +690,13 @@ class LogAnalyzerApp(QWidget):
         cancel_button = QPushButton("Cancel")
         
         def apply_filter():
-            column_index = column_combo.currentIndex()
-            current_item = value_list.currentItem()
-            if column_index >= 0 and current_item:
-                self.apply_filter(column_index, current_item.text())
+            current_column = column_list.currentItem()
+            current_row = value_table.currentRow()
+            if current_column and current_row >= 0:
+                column_index = column_list.row(current_column)
+                value_item = value_table.item(current_row, 0)
+                if value_item:
+                    self.apply_filter(column_index, value_item.text())
             dialog.accept()
         
         apply_button.clicked.connect(apply_filter)
@@ -653,9 +704,9 @@ class LogAnalyzerApp(QWidget):
         
         button_layout.addWidget(apply_button)
         button_layout.addWidget(cancel_button)
-        layout.addLayout(button_layout)
+        main_layout.addLayout(button_layout)
         
-        dialog.setLayout(layout)
+        dialog.setLayout(main_layout)
         dialog.exec()
     
     def clear_all_filters(self):
@@ -663,8 +714,9 @@ class LogAnalyzerApp(QWidget):
         self.proxy_model.invalidateFilter()
 
     def apply_filter(self, column_index, filter_text):
+        # Clear all existing filters before applying new one
+        self.proxy_model._filters.clear()
         self.proxy_model.setFilterByColumn(column_index, filter_text)
-        self.table_widget.horizontalHeader().resizeSections(QHeaderView.ResizeMode.ResizeToContents) # Re-adjust column widths after filtering
 
     def show_image_preview(self, pixmap):
         if not pixmap.isNull():
