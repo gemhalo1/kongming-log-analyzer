@@ -410,7 +410,9 @@ class KongmingELKServer(object):
 
         for traceId in traceid_round_map:
             round = DialogRound.from_records(**traceid_round_map[traceId])
-            rounds.append(round)
+
+            if round is not None:
+                rounds.append(round)
 
         if len(rounds) > size:
             rounds = rounds[:size]

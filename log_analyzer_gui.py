@@ -49,6 +49,7 @@ class ImageFetcher(QThread):
             self.error.emit(f"An unexpected error occurred fetching image from {self.url}: {e}")
 
 from PyQt6.QtWidgets import QDialog, QMenu
+from PyQt6.QtWebEngineWidgets import QWebEngineView
 
 def create_standard_item(text, tooltip=None):
     """Create a QStandardItem with text and optional tooltip"""
@@ -79,21 +80,123 @@ def create_item(text, tooltip=None):
     return create_standard_item(text, tooltip)
 
 class ImagePreviewPopup(QDialog):
+    # Class variable to remember dialog size
+    _saved_size = None
+    
     def __init__(self, pixmap, parent=None):
         super().__init__(parent)
-        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.WindowStaysOnTopHint) # Make it a dialog
-        self.setWindowModality(Qt.WindowModality.ApplicationModal) # Make it modal
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.WindowStaysOnTopHint)
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self.setWindowTitle("Image Preview")
+        
+        self.original_pixmap = pixmap
         
         main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(5, 5, 5, 5)
         
         # Image Label
-        label = QLabel()
-        label.setPixmap(pixmap.scaled(500, 500, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)) # Scale image
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        main_layout.addWidget(label)
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_label.setMinimumSize(200, 200)
+        main_layout.addWidget(self.image_label)
 
         self.setLayout(main_layout)
-        self.setFixedSize(self.sizeHint()) # Disable resizing
+        
+        # Set initial size
+        if ImagePreviewPopup._saved_size:
+            self.resize(ImagePreviewPopup._saved_size)
+        else:
+            self.resize(600, 500)
+        
+        # Update image to fit current size
+        self.update_image_size()
+    
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Update image when dialog is resized
+        self.update_image_size()
+        # Save the new size
+        ImagePreviewPopup._saved_size = self.size()
+    
+    def update_image_size(self):
+        # Get available space for image (subtract margins)
+        available_size = self.image_label.size()
+        if available_size.width() > 0 and available_size.height() > 0:
+            # Scale pixmap to fit available space while keeping aspect ratio
+            scaled_pixmap = self.original_pixmap.scaled(
+                available_size, 
+                Qt.AspectRatioMode.KeepAspectRatio, 
+                Qt.TransformationMode.SmoothTransformation
+            )
+            self.image_label.setPixmap(scaled_pixmap)
+
+class MapDialog(QDialog):
+    def __init__(self, location_text, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Location Map")
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.WindowStaysOnTopHint)
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self.resize(800, 600)
+        
+        layout = QVBoxLayout()
+        
+        # Parse coordinates from location text (assuming format like "lat,lng")
+        try:
+            coords = location_text.split(',')
+            if len(coords) == 2:
+                lat = float(coords[1].strip())
+                lng = float(coords[0].strip())
+            else:
+                lat, lng = 39.9042, 116.4074  # Default to Beijing
+        except:
+            lat, lng = 39.9042, 116.4074  # Default to Beijing
+        
+        # Create WebView
+        web_view = QWebEngineView()
+
+        # HTML content with Amap (高德地图)
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <title>Location Map</title>
+            <script src="https://webapi.amap.com/maps?v=1.4.15&key=b4eb7a9939ad6c7f2831079165ef51e8"></script>
+            <style>
+                * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+                html, body {{ width: 100%; height: 100%; overflow: hidden; }}
+                #mapContainer {{ width: 100%; height: 100%; }}
+            </style>
+        </head>
+        <body>
+            <div id="mapContainer"></div>
+            <script>
+                var map = new AMap.Map('mapContainer', {{
+                    zoom: 15,
+                    center: [{lng}, {lat}],
+                    resizeEnable: true
+                }});
+                
+                var marker = new AMap.Marker({{
+                    position: [{lng}, {lat}],
+                    title: 'Location: {location_text}'
+                }});
+                
+                map.add(marker);
+                
+                // Auto resize map when window resizes
+                window.addEventListener('resize', function() {{
+                    map.getSize();
+                }});
+            </script>
+        </body>
+        </html>
+        """
+        
+        web_view.setHtml(html_content)
+        layout.addWidget(web_view)
+        
+        self.setLayout(layout)
 
 class QueryWorker(QThread):
     finished = pyqtSignal(list)
@@ -596,6 +699,13 @@ class LogAnalyzerApp(QWidget):
                 self.image_fetcher.finished.connect(self.show_image_preview)
                 self.image_fetcher.error.connect(self.show_image_fetch_error)
                 self.image_fetcher.start()
+        elif header_text == "位置":
+            if item and item.text().strip():
+                self.show_map_dialog(item.text())
+    
+    def show_map_dialog(self, location_text):
+        map_dialog = MapDialog(location_text, self)
+        map_dialog.exec()
 
     def show_filter_dialog(self):
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem, QPushButton, QTableWidget, QTableWidgetItem
