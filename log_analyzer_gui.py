@@ -6,10 +6,11 @@ import base64
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QTableWidget, QTableWidgetItem, QComboBox, QDateTimeEdit,
-    QHeaderView, QStatusBar, QMessageBox, QSizePolicy, QCheckBox, QStyle
+    QHeaderView, QStatusBar, QMessageBox, QSizePolicy, QCheckBox, QStyle,
+    QTableView # Added for QStandardItemModel
 )
-from PyQt6.QtGui import QFont, QIntValidator, QPixmap, QIcon
-from PyQt6.QtCore import QThread, pyqtSignal, QDateTime, Qt
+from PyQt6.QtGui import QFont, QIntValidator, QPixmap, QIcon, QStandardItem, QStandardItemModel # Added QStandardItem, QStandardItemModel
+from PyQt6.QtCore import QThread, pyqtSignal, QDateTime, Qt, QSortFilterProxyModel, QPoint, QModelIndex, QRect # Added QSortFilterProxyModel, QPoint, QModelIndex, QRect
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -47,10 +48,22 @@ class ImageFetcher(QThread):
         except Exception as e:
             self.error.emit(f"An unexpected error occurred fetching image from {self.url}: {e}")
 
-from PyQt6.QtWidgets import QDialog
+from PyQt6.QtWidgets import QDialog, QMenu
+
+def create_standard_item(text, tooltip=None):
+    """Create a QStandardItem with text and optional tooltip"""
+    item = QStandardItem(str(text))
+    if tooltip:
+        item.setToolTip(str(tooltip))
+    return item
+
+def create_item(text, tooltip=None):
+    """Alias for create_standard_item for backward compatibility"""
+    return create_standard_item(text, tooltip)
+
 class ImagePreviewPopup(QDialog):
-    def __init__(self, pixmap):
-        super().__init__()
+    def __init__(self, pixmap, parent=None):
+        super().__init__(parent)
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.WindowStaysOnTopHint) # Make it a dialog
         self.setWindowModality(Qt.WindowModality.ApplicationModal) # Make it modal
         
@@ -104,6 +117,32 @@ class QueryWorker(QThread):
         except Exception as e:
             self.error.emit(f"Query failed: {str(e)}")
             self.progress.emit("Query failed.")
+
+class LogFilterProxyModel(QSortFilterProxyModel):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._filters = {} # {column_index: filter_text}
+
+    def setFilterByColumn(self, column_index, filter_text):
+        if filter_text:
+            self._filters[column_index] = filter_text
+        else:
+            self._filters.pop(column_index, None)
+        self.invalidateFilter() # Re-apply filters
+
+    def filterAcceptsRow(self, source_row, source_parent):
+        if not self._filters:
+            return True # No filters applied
+
+        for column_index, filter_text in self._filters.items():
+            index = self.sourceModel().index(source_row, column_index, source_parent)
+            if index.isValid():
+                data = self.sourceModel().data(index)
+                if filter_text.lower() not in str(data).lower():
+                    return False # Mismatch in this column
+        return True # All filters passed
+
+# Removed FilterHeaderView class as it's no longer needed
 
 class LogAnalyzerApp(QWidget):
     SETTINGS_FILE = ".kongminglog.ini"
@@ -269,19 +308,38 @@ class LogAnalyzerApp(QWidget):
         id_layout.addWidget(self.query_size_input)
         query_group_layout.addLayout(id_layout)
 
-        # Search Button
+        # Search and Filter Buttons
+        button_layout = QHBoxLayout()
         self.search_button = QPushButton("Search Logs")
         self.search_button.clicked.connect(self.start_query)
-        query_group_layout.addWidget(self.search_button)
+        button_layout.addWidget(self.search_button)
+        
+        self.filter_button = QPushButton("Filter Results")
+        self.filter_button.clicked.connect(self.show_filter_dialog)
+        button_layout.addWidget(self.filter_button)
+        
+        self.clear_filter_button = QPushButton("Clear Filter")
+        self.clear_filter_button.clicked.connect(self.clear_all_filters)
+        button_layout.addWidget(self.clear_filter_button)
+        
+        query_group_layout.addLayout(button_layout)
         main_layout.addLayout(query_group_layout)
 
         # --- Results Section ---
         results_group_layout = QVBoxLayout()
         results_group_layout.addWidget(QLabel("<h3>Query Results</h3>"))
 
-        self.table_widget = QTableWidget()
-        self.setup_table_headers()
-        self.table_widget.cellDoubleClicked.connect(self.handle_cell_double_clicked)
+        self.data_model = QStandardItemModel()
+        self.proxy_model = LogFilterProxyModel() # Use custom proxy model
+        self.proxy_model.setSourceModel(self.data_model)
+        
+        self.table_widget = QTableView() # Change to QTableView
+        self.table_widget.setModel(self.proxy_model) # Set proxy model to table
+        self.table_widget.setEditTriggers(QTableView.EditTrigger.NoEditTriggers) # Disable editing
+        self.table_widget.setSelectionBehavior(QTableView.SelectionBehavior.SelectItems) # Allow item selection for copying
+
+        self.setup_table_headers() # This will now set headers on data_model
+        self.table_widget.doubleClicked.connect(self.handle_cell_double_clicked)
         results_group_layout.addWidget(self.table_widget)
         main_layout.addLayout(results_group_layout)
 
@@ -302,9 +360,10 @@ class LogAnalyzerApp(QWidget):
             "glassDeviceId", "iotDeviceId", "accountId", "xjAccountId",
             "sessionId", "msgId",
         ]
-        self.table_widget.setColumnCount(len(headers))
-        self.table_widget.setHorizontalHeaderLabels(headers)
-        self.table_widget.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.data_model.setColumnCount(len(headers))
+        self.data_model.setHorizontalHeaderLabels(headers)
+        # The QTableWidget will get its header from the proxy model, which gets it from the data model
+        self.table_widget.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive) # This will be handled by the view
         self.table_widget.verticalHeader().setVisible(True) # Show row numbers
         self.table_widget.setFont(QFont("Courier New", 8)) # Set smaller monospace font
 
@@ -339,6 +398,7 @@ class LogAnalyzerApp(QWidget):
 
         self.status_bar.showMessage("Starting query...")
         self.search_button.setEnabled(False) # Disable button during query
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor) # Set busy cursor
 
         self.query_worker = QueryWorker(server_config, filter_config, query_size)
         self.query_worker.finished.connect(self.display_results)
@@ -347,7 +407,11 @@ class LogAnalyzerApp(QWidget):
         self.query_worker.start()
 
     def display_results(self, rounds: List[DialogRound]):
-        self.table_widget.setRowCount(len(rounds))
+        # Clear existing data and reset column count
+        self.data_model.clear()
+        self.setup_table_headers()  # Reset headers
+        self.data_model.setRowCount(len(rounds)) # Set row count on the data model
+        print(f"Initial column count: {self.data_model.columnCount()}")  # Debug
         for row_idx, round in enumerate(rounds):
             # Populate table based on the headers defined in setup_table_headers
             # This mapping needs to be careful and match the order of headers
@@ -357,12 +421,7 @@ class LogAnalyzerApp(QWidget):
             if round is None:
                 continue
 
-            # Helper to create non-editable item
-            def create_item(text, tooltip_text=""):
-                item = QTableWidgetItem(text)
-                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                item.setToolTip(tooltip_text)
-                return item
+            
 
             # General
             timestamp_str = round.nlp_round.request_timestamp if round.nlp_round and round.nlp_round.request_timestamp else ""
@@ -378,136 +437,238 @@ class LogAnalyzerApp(QWidget):
                     display_timestamp = timestamp_str # Fallback if parsing fails
             else:
                 display_timestamp = ""
-            self.table_widget.setItem(row_idx, col_idx, create_item(display_timestamp))
+            self.data_model.setItem(row_idx, col_idx, create_item(display_timestamp))
             col_idx += 1
-            self.table_widget.setItem(row_idx, col_idx, create_item(round.traceId or ""))
+            self.data_model.setItem(row_idx, col_idx, create_item(round.traceId or ""))
             col_idx += 1
-            self.table_widget.setItem(row_idx, col_idx, create_item(str(int(round.glassProduct)) if round.glassProduct else ""))
+            self.data_model.setItem(row_idx, col_idx, create_item(str(int(round.glassProduct)) if round.glassProduct else ""))
             col_idx += 1
-            self.table_widget.setItem(row_idx, col_idx, create_item(str(round.location) if round.location else ""))
+            self.data_model.setItem(row_idx, col_idx, create_item(str(round.location) if round.location else ""))
             col_idx += 1
-            self.table_widget.setItem(row_idx, col_idx, create_item(str(round.originType) if round.originType is not None else ""))
+            self.data_model.setItem(row_idx, col_idx, create_item(str(round.originType) if round.originType is not None else ""))
             col_idx += 1
-            self.table_widget.setItem(row_idx, col_idx, create_item(str(round.functionType) if round.functionType is not None else ""))
+            self.data_model.setItem(row_idx, col_idx, create_item(str(round.functionType) if round.functionType is not None else ""))
             col_idx += 1
-            self.table_widget.setItem(row_idx, col_idx, create_item(round.local or ""))
+            self.data_model.setItem(row_idx, col_idx, create_item(round.local or ""))
             col_idx += 1
-            self.table_widget.setItem(row_idx, col_idx, create_item(round.timeZone or ""))
+            self.data_model.setItem(row_idx, col_idx, create_item(round.timeZone or ""))
             col_idx += 1
-            self.table_widget.setItem(row_idx, col_idx, create_item(round.nluLanguage or ""))
+            self.data_model.setItem(row_idx, col_idx, create_item(round.nluLanguage or ""))
             col_idx += 1
-            self.table_widget.setItem(row_idx, col_idx, create_item(str(round.sessionFirstFlag) if round.sessionFirstFlag is not None else ""))
+            self.data_model.setItem(row_idx, col_idx, create_item(str(round.sessionFirstFlag) if round.sessionFirstFlag is not None else ""))
             col_idx += 1
 
             # NLU Round
             if round.nlp_round:
                 nlu_query_text = round.nlp_round.query if round.nlp_round.query != "CLEAN_CONTEXT_MAGIC_STRING" else "<清除上下文>"
-                self.table_widget.setItem(row_idx, col_idx, create_item(nlu_query_text, nlu_query_text))
+                self.data_model.setItem(row_idx, col_idx, create_item(nlu_query_text, nlu_query_text))
                 col_idx += 1
-                self.table_widget.setItem(row_idx, col_idx, create_item(str(round.nlp_round.intent or "")))
+                self.data_model.setItem(row_idx, col_idx, create_item(str(round.nlp_round.intent or "")))
                 col_idx += 1
                 nlu_utterance_text = str(round.nlp_round.utterance) if round.nlp_round.utterance else ""
-                self.table_widget.setItem(row_idx, col_idx, create_item(nlu_utterance_text, nlu_utterance_text))
+                self.data_model.setItem(row_idx, col_idx, create_item(nlu_utterance_text, nlu_utterance_text))
                 col_idx += 1
-                self.table_widget.setItem(row_idx, col_idx, create_item(str(round.nlp_round.error) if round.nlp_round.error else ""))
+                self.data_model.setItem(row_idx, col_idx, create_item(str(round.nlp_round.error) if round.nlp_round.error else ""))
                 col_idx += 1
                 nlu_latency = calculate_time_difference(round.nlp_round.request_timestamp, round.nlp_round.response_timestamp) if round.nlp_round.response_timestamp else ""
-                self.table_widget.setItem(row_idx, col_idx, create_item(str(nlu_latency)))
+                self.data_model.setItem(row_idx, col_idx, create_item(str(nlu_latency)))
                 col_idx += 1
             else:
-                col_idx += 5 # Skip NLU columns if no nlp_round
+                # Fill empty cells for NLU columns
+                for _ in range(5):
+                    self.data_model.setItem(row_idx, col_idx, create_item(""))
+                    col_idx += 1
 
             # LLM Round
             if round.llm_round:
                 llm_query_text = round.llm_round.query or ""
-                self.table_widget.setItem(row_idx, col_idx, create_item(llm_query_text, llm_query_text))
+                self.data_model.setItem(row_idx, col_idx, create_item(llm_query_text, llm_query_text))
                 col_idx += 1
-                self.table_widget.setItem(row_idx, col_idx, create_item(round.llm_round.intent_name or ""))
+                self.data_model.setItem(row_idx, col_idx, create_item(round.llm_round.intent_name or ""))
                 col_idx += 1
-                self.table_widget.setItem(row_idx, col_idx, create_item(str(round.llm_round.channel_type) if round.llm_round.channel_type is not None else ""))
+                self.data_model.setItem(row_idx, col_idx, create_item(str(round.llm_round.channel_type) if round.llm_round.channel_type is not None else ""))
                 col_idx += 1
                 files_text = "\n".join([file.ossUrl for file in round.llm_round.files]) if round.llm_round.files else ""
                 if files_text:
-                    item = create_item("", files_text) # Display empty text, tooltip is URL
+                    item = create_standard_item("", files_text) # Display empty text, tooltip is URL
                     item.setIcon(QApplication.instance().style().standardIcon(QStyle.StandardPixmap.SP_FileIcon))
-                    self.table_widget.setItem(row_idx, col_idx, item)
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    self.data_model.setItem(row_idx, col_idx, item)
                 else:
-                    self.table_widget.setItem(row_idx, col_idx, create_item(""))
+                    item = create_standard_item("")
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    self.data_model.setItem(row_idx, col_idx, item)
                 col_idx += 1
-                self.table_widget.setItem(row_idx, col_idx, create_item(str(round.llm_round.play_status) if round.llm_round.play_status is not None else ""))
+                self.data_model.setItem(row_idx, col_idx, create_item(str(round.llm_round.play_status) if round.llm_round.play_status is not None else ""))
                 col_idx += 1
-                self.table_widget.setItem(row_idx, col_idx, create_item(str(round.llm_round.use_deepseek) if round.llm_round.use_deepseek is not None else ""))
+                self.data_model.setItem(row_idx, col_idx, create_item(str(round.llm_round.use_deepseek) if round.llm_round.use_deepseek is not None else ""))
                 col_idx += 1
-                self.table_widget.setItem(row_idx, col_idx, create_item(str(round.llm_round.use_search) if round.llm_round.use_search is not None else ""))
+                self.data_model.setItem(row_idx, col_idx, create_item(str(round.llm_round.use_search) if round.llm_round.use_search is not None else ""))
                 col_idx += 1
-                self.table_widget.setItem(row_idx, col_idx, create_item(str(round.llm_round.visual_aids_status) if round.llm_round.visual_aids_status is not None else ""))
+                self.data_model.setItem(row_idx, col_idx, create_item(str(round.llm_round.visual_aids_status) if round.llm_round.visual_aids_status is not None else ""))
                 col_idx += 1
-                self.table_widget.setItem(row_idx, col_idx, create_item(str(round.llm_round.clean_context) if round.llm_round.clean_context is not None else ""))
+                self.data_model.setItem(row_idx, col_idx, create_item(str(round.llm_round.clean_context) if round.llm_round.clean_context is not None else ""))
                 col_idx += 1
                 llm_answer_text = round.llm_round.answer or ""
-                self.table_widget.setItem(row_idx, col_idx, create_item(llm_answer_text, llm_answer_text))
+                self.data_model.setItem(row_idx, col_idx, create_item(llm_answer_text, llm_answer_text))
                 col_idx += 1
-                self.table_widget.setItem(row_idx, col_idx, create_item(round.llm_round.reason or ""))
+                self.data_model.setItem(row_idx, col_idx, create_item(round.llm_round.reason or ""))
                 col_idx += 1
-                self.table_widget.setItem(row_idx, col_idx, create_item(str(round.llm_round.thoughts_data) if round.llm_round.thoughts_data else ""))
+                self.data_model.setItem(row_idx, col_idx, create_item(str(round.llm_round.thoughts_data) if round.llm_round.thoughts_data else ""))
                 col_idx += 1
-                self.table_widget.setItem(row_idx, col_idx, create_item(str(round.llm_round.base_status) if round.llm_round.base_status is not None else ""))
+                self.data_model.setItem(row_idx, col_idx, create_item(str(round.llm_round.base_status) if round.llm_round.base_status is not None else ""))
                 col_idx += 1
                 llm_latency = calculate_time_difference(round.llm_round.request_timestamp, round.llm_round.response_timestamp) if round.llm_round.response_timestamp else ""
-                self.table_widget.setItem(row_idx, col_idx, create_item(str(llm_latency)))
+                self.data_model.setItem(row_idx, col_idx, create_item(str(llm_latency)))
                 col_idx += 1
             else:
-                col_idx += 15 # Skip LLM columns if no llm_round
+                # Fill empty cells for LLM columns
+                for _ in range(14):
+                    self.data_model.setItem(row_idx, col_idx, create_item(""))
+                    col_idx += 1
 
             # IDs
-            self.table_widget.setItem(row_idx, col_idx, create_item(round.deviceId or ""))
+            self.data_model.setItem(row_idx, col_idx, create_item(round.deviceId or ""))
             col_idx += 1
-            self.table_widget.setItem(row_idx, col_idx, create_item(round.glassDeviceId or ""))
+            self.data_model.setItem(row_idx, col_idx, create_item(round.glassDeviceId or ""))
             col_idx += 1
-            self.table_widget.setItem(row_idx, col_idx, create_item(round.iotDeviceId or ""))
+            self.data_model.setItem(row_idx, col_idx, create_item(round.iotDeviceId or ""))
             col_idx += 1
-            self.table_widget.setItem(row_idx, col_idx, create_item(round.accountId or ""))
+            self.data_model.setItem(row_idx, col_idx, create_item(round.accountId or ""))
             col_idx += 1
-            self.table_widget.setItem(row_idx, col_idx, create_item(round.xjAccountId or ""))
+            self.data_model.setItem(row_idx, col_idx, create_item(round.xjAccountId or ""))
             col_idx += 1
-            self.table_widget.setItem(row_idx, col_idx, create_item(round.sessionId or ""))
+            self.data_model.setItem(row_idx, col_idx, create_item(round.sessionId or ""))
             col_idx += 1
-            self.table_widget.setItem(row_idx, col_idx, create_item(round.msgId or ""))
-            col_idx += 1
+            self.data_model.setItem(row_idx, col_idx, create_item(round.msgId or ""))
 
-        self.table_widget.resizeColumnsToContents()
+        # Ensure column count matches expected
+        expected_columns = 36
+        if self.data_model.columnCount() > expected_columns:
+            print(f"Warning: Model has {self.data_model.columnCount()} columns, expected {expected_columns}")
+            self.data_model.setColumnCount(expected_columns)
+            self.setup_table_headers()  # Reset headers again
+
+        self.table_widget.horizontalHeader().resizeSections(QHeaderView.ResizeMode.ResizeToContents)
         # Set fixed width for specific columns after resizeColumnsToContents
         fixed_width_columns = {
             "NLU查询": 250,
             "NLU回答": 250,
             "LLM查询": 250,
             "LLM回答": 250,
-            "照片": 30,
+            "照片": 36,
             "LLM思考": 250,
             "LLM搜索数据": 250,
         }
-        headers = [self.table_widget.horizontalHeaderItem(i).text() for i in range(self.table_widget.columnCount())]
+        headers = []
+        for i in range(self.data_model.columnCount()):
+            header_item = self.data_model.horizontalHeaderItem(i)
+            if header_item:
+                headers.append(header_item.text())
+            else:
+                headers.append(f"Column_{i}")
         for col_name, width in fixed_width_columns.items():
             try:
                 col_idx = headers.index(col_name)
-                self.table_widget.setColumnWidth(col_idx, width)
+                self.table_widget.horizontalHeader().resizeSection(col_idx, width)
             except ValueError:
                 pass # Column not found, ignore
 
         self.search_button.setEnabled(True) # Re-enable button
+        QApplication.restoreOverrideCursor() # Restore normal cursor
 
-    def handle_cell_double_clicked(self, row, column):
-        if self.table_widget.horizontalHeaderItem(column).text() == "照片":
-            item = self.table_widget.item(row, column)
+    def handle_cell_double_clicked(self, index: QModelIndex):
+        # Get the item from the proxy model
+        proxy_index = index
+        # Map the proxy index to the source model index to get the actual QStandardItem
+        source_index = self.proxy_model.mapToSource(proxy_index)
+        item = self.data_model.itemFromIndex(source_index)
+
+        # Get header text from the proxy model's header
+        header_text = self.proxy_model.headerData(proxy_index.column(), Qt.Orientation.Horizontal)
+        if header_text == "照片":
             if item and item.toolTip():
                 self.image_fetcher = ImageFetcher(item.toolTip())
                 self.image_fetcher.finished.connect(self.show_image_preview)
                 self.image_fetcher.error.connect(self.show_image_fetch_error)
                 self.image_fetcher.start()
 
+    def show_filter_dialog(self):
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QComboBox, QListWidget, QListWidgetItem, QPushButton
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Filter Results")
+        dialog.setFixedSize(400, 500)
+        
+        layout = QVBoxLayout()
+        
+        # Column selection
+        layout.addWidget(QLabel("Select Column:"))
+        column_combo = QComboBox()
+        headers = []
+        for i in range(self.data_model.columnCount()):
+            header_item = self.data_model.horizontalHeaderItem(i)
+            if header_item:
+                headers.append(header_item.text())
+                column_combo.addItem(header_item.text())
+        layout.addWidget(column_combo)
+        
+        # Value selection
+        layout.addWidget(QLabel("Select Value:"))
+        value_list = QListWidget()
+        value_list.setFixedHeight(300)
+        layout.addWidget(value_list)
+        
+        # Update values when column changes
+        def update_values():
+            value_list.clear()
+            column_index = column_combo.currentIndex()
+            if column_index >= 0:
+                unique_values = set()
+                for row in range(self.data_model.rowCount()):
+                    item = self.data_model.item(row, column_index)
+                    if item and item.text().strip():
+                        unique_values.add(item.text())
+                
+                for value in sorted(list(unique_values)):
+                    value_list.addItem(QListWidgetItem(value))
+        
+        column_combo.currentIndexChanged.connect(update_values)
+        update_values()  # Initial load
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        apply_button = QPushButton("Apply Filter")
+        cancel_button = QPushButton("Cancel")
+        
+        def apply_filter():
+            column_index = column_combo.currentIndex()
+            current_item = value_list.currentItem()
+            if column_index >= 0 and current_item:
+                self.apply_filter(column_index, current_item.text())
+            dialog.accept()
+        
+        apply_button.clicked.connect(apply_filter)
+        cancel_button.clicked.connect(dialog.reject)
+        
+        button_layout.addWidget(apply_button)
+        button_layout.addWidget(cancel_button)
+        layout.addLayout(button_layout)
+        
+        dialog.setLayout(layout)
+        dialog.exec()
+    
+    def clear_all_filters(self):
+        self.proxy_model._filters.clear()
+        self.proxy_model.invalidateFilter()
+
+    def apply_filter(self, column_index, filter_text):
+        self.proxy_model.setFilterByColumn(column_index, filter_text)
+        self.table_widget.horizontalHeader().resizeSections(QHeaderView.ResizeMode.ResizeToContents) # Re-adjust column widths after filtering
+
     def show_image_preview(self, pixmap):
         if not pixmap.isNull():
-            self.image_preview_popup = ImagePreviewPopup(pixmap)
+            self.image_preview_popup = ImagePreviewPopup(pixmap, self)
             self.image_preview_popup.exec() # Use exec() for modal dialog (PyQt6)
 
     def show_image_fetch_error(self, message):
@@ -517,6 +678,7 @@ class LogAnalyzerApp(QWidget):
         QMessageBox.critical(self, "Error", message)
         self.status_bar.showMessage("Error: " + message)
         self.search_button.setEnabled(True) # Re-enable button
+        QApplication.restoreOverrideCursor() # Restore normal cursor
 
     def save_settings(self):
         config = configparser.ConfigParser()
