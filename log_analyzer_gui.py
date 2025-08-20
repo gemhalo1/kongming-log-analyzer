@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QTableWidget, QTableWidgetItem, QComboBox, QDateTimeEdit,
     QHeaderView, QStatusBar, QMessageBox, QSizePolicy, QCheckBox, QStyle,
-    QTableView # Added for QStandardItemModel
+    QTableView, QToolBar # Added for QStandardItemModel and QToolBar
 )
 from PyQt6.QtGui import QFont, QIntValidator, QPixmap, QIcon, QStandardItem, QStandardItemModel # Added QStandardItem, QStandardItemModel
 from PyQt6.QtCore import QThread, pyqtSignal, QDateTime, Qt, QSortFilterProxyModel, QPoint, QModelIndex, QRect # Added QSortFilterProxyModel, QPoint, QModelIndex, QRect
@@ -338,6 +338,26 @@ class LogAnalyzerApp(QWidget):
 
     def init_ui(self):
         main_layout = QVBoxLayout()
+        
+        # --- Toolbar ---
+        toolbar = QToolBar()
+        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        
+        self.search_button = QPushButton("搜索日志")
+        self.search_button.clicked.connect(self.start_query)
+        toolbar.addWidget(self.search_button)
+        
+        toolbar.addSeparator()
+        
+        self.filter_button = QPushButton("筛选结果")
+        self.filter_button.clicked.connect(self.show_filter_dialog)
+        toolbar.addWidget(self.filter_button)
+        
+        self.clear_filter_button = QPushButton("清除筛选")
+        self.clear_filter_button.clicked.connect(self.clear_all_filters)
+        toolbar.addWidget(self.clear_filter_button)
+        
+        main_layout.addWidget(toolbar)
 
         # --- Configuration Section ---
         config_group_layout = QVBoxLayout()
@@ -427,22 +447,6 @@ class LogAnalyzerApp(QWidget):
         self.query_size_input.setValidator(QIntValidator()) # Only allow integers
         id_layout.addWidget(self.query_size_input)
         query_group_layout.addLayout(id_layout)
-
-        # Search and Filter Buttons
-        button_layout = QHBoxLayout()
-        self.search_button = QPushButton("Search Logs")
-        self.search_button.clicked.connect(self.start_query)
-        button_layout.addWidget(self.search_button)
-        
-        self.filter_button = QPushButton("Filter Results")
-        self.filter_button.clicked.connect(self.show_filter_dialog)
-        button_layout.addWidget(self.filter_button)
-        
-        self.clear_filter_button = QPushButton("Clear Filter")
-        self.clear_filter_button.clicked.connect(self.clear_all_filters)
-        button_layout.addWidget(self.clear_filter_button)
-        
-        query_group_layout.addLayout(button_layout)
         main_layout.addLayout(query_group_layout)
 
         # --- Results Section ---
@@ -712,7 +716,7 @@ class LogAnalyzerApp(QWidget):
         from collections import Counter
         
         dialog = QDialog(self)
-        dialog.setWindowTitle("Filter Results")
+        dialog.setWindowTitle("筛选结果")
         dialog.resize(700, 500)
         
         main_layout = QVBoxLayout()
@@ -796,8 +800,8 @@ class LogAnalyzerApp(QWidget):
         
         # Buttons
         button_layout = QHBoxLayout()
-        apply_button = QPushButton("Apply Filter")
-        cancel_button = QPushButton("Cancel")
+        apply_button = QPushButton("应用筛选")
+        cancel_button = QPushButton("取消")
         
         def apply_filter():
             current_column = column_list.currentItem()

@@ -4,6 +4,23 @@ from typing import Literal, Union, List, Optional, Dict
 ID_TYPE = Literal['deviceId', 'glassDeviceId', 'iotDeviceId', 'xjAccountId', 'accountId']
 # GLASS_PRODUCT = Literal['', '1001', '1002', '1003', '1004', '1005']
 
+DeviceCodeMap = {
+    '1001': 'Concept',
+    '1002': 'Star',
+    '1003': 'Air',
+    '1004': 'AirPro',
+    '1005': 'Normandy',
+
+    '1200': '指环一代',
+    '1201': '指环国内二代',
+    '1202': '指环国外二代',
+    '1203': '指环美版二代',
+
+    '5001': '海外Air',
+    '5002': '海外AirPro',
+    '5003': '海外Normandy',
+}
+
 class DialogLogFilter(BaseModel):
     timestamp_begin: Optional[str] = None
     timestamp_end: Optional[str] = None
@@ -178,7 +195,10 @@ class DialogRound(BaseModel):
     sessionId: Optional[str]= None
     msgId: Optional[str]= None
 
+    # 请求发起端：0:眼镜  1:手机
     originType: Optional[int]= None
+
+    #　请求类型：0:语音 2:文本
     functionType: Optional[int]= None
 
     sessionFirstFlag: Optional[bool] = None
