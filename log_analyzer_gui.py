@@ -1,11 +1,14 @@
 import sys
 import requests
+import os
+import configparser
+import base64
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QTableWidget, QTableWidgetItem, QComboBox, QDateTimeEdit,
-    QHeaderView, QStatusBar, QMessageBox, QSizePolicy, QCheckBox
+    QHeaderView, QStatusBar, QMessageBox, QSizePolicy, QCheckBox, QStyle
 )
-from PyQt6.QtGui import QFont, QIntValidator, QPixmap
+from PyQt6.QtGui import QFont, QIntValidator, QPixmap, QIcon
 from PyQt6.QtCore import QThread, pyqtSignal, QDateTime, Qt
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
@@ -44,7 +47,8 @@ class ImageFetcher(QThread):
         except Exception as e:
             self.error.emit(f"An unexpected error occurred fetching image from {self.url}: {e}")
 
-class ImagePreviewPopup(QWidget):
+from PyQt6.QtWidgets import QDialog
+class ImagePreviewPopup(QDialog):
     def __init__(self, pixmap):
         super().__init__()
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.WindowStaysOnTopHint) # Make it a dialog
@@ -58,12 +62,8 @@ class ImagePreviewPopup(QWidget):
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(label)
 
-        # Close Button
-        close_button = QPushButton("Close")
-        close_button.clicked.connect(self.close)
-        main_layout.addWidget(close_button)
-
         self.setLayout(main_layout)
+        self.setFixedSize(self.sizeHint()) # Disable resizing
 
 class QueryWorker(QThread):
     finished = pyqtSignal(list)
@@ -106,6 +106,8 @@ class QueryWorker(QThread):
             self.progress.emit("Query failed.")
 
 class LogAnalyzerApp(QWidget):
+    SETTINGS_FILE = ".kongminglog.ini"
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Kongming Log Analyzer")
@@ -114,6 +116,66 @@ class LogAnalyzerApp(QWidget):
         self.init_ui()
         self.query_worker = None
         self.image_preview_popup = None
+        self.load_settings() # Call load_settings after init_ui
+
+    def load_settings(self):
+        config = configparser.ConfigParser()
+        settings_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), self.SETTINGS_FILE)
+        
+        if os.path.exists(settings_path):
+            config.read(settings_path)
+
+            # Load Window Geometry
+            if 'Window' in config:
+                try:
+                    x = config.getint('Window', 'x', fallback=100)
+                    y = config.getint('Window', 'y', fallback=100)
+                    width = config.getint('Window', 'width', fallback=1200)
+                    height = config.getint('Window', 'height', fallback=800)
+                    self.setGeometry(x, y, width, height)
+                except ValueError:
+                    pass # Use default if parsing fails
+
+            # Load ELK Server Configuration
+            if 'ELK_Config' in config:
+                self.server_url_input.setText(config.get('ELK_Config', 'server_url', fallback="https://elk.xjsdtech.com"))
+                self.username_input.setText(config.get('ELK_Config', 'username', fallback="ai"))
+                self.password_input.setText(config.get('ELK_Config', 'password', fallback="ai@123456"))
+                self.env_combo.setCurrentText(config.get('ELK_Config', 'environment', fallback="uat"))
+
+            # Load Query Conditions
+            if 'Query_Conditions' in config:
+                # QDateTimeEdit
+                start_time_str = config.get('Query_Conditions', 'start_time', fallback="")
+                if start_time_str:
+                    self.start_time_edit.setDateTime(QDateTime.fromString(start_time_str, "yyyy-MM-dd HH:mm:ss"))
+                
+                end_time_str = config.get('Query_Conditions', 'end_time', fallback="")
+                if end_time_str:
+                    self.end_time_edit.setDateTime(QDateTime.fromString(end_time_str, "yyyy-MM-dd HH:mm:ss"))
+
+                # QCheckBox
+                self.enable_start_time_checkbox.setChecked(config.getboolean('Query_Conditions', 'enable_start_time', fallback=True))
+                self.enable_end_time_checkbox.setChecked(config.getboolean('Query_Conditions', 'enable_end_time', fallback=True))
+
+                # QLineEdit
+                self.phrase_input.setText(config.get('Query_Conditions', 'phrase', fallback=""))
+                self.id_value_input.setText(config.get('Query_Conditions', 'id_value', fallback=""))
+                self.query_size_input.setText(config.get('Query_Conditions', 'query_size', fallback="100"))
+
+                # QComboBox
+                self.glass_product_combo.setCurrentText(config.get('Query_Conditions', 'glass_product', fallback=""))
+                self.id_type_combo.setCurrentText(config.get('Query_Conditions', 'id_type', fallback=""))
+
+            # Load Table Header State
+            if 'Table' in config:
+                try:
+                    header_state_str = config.get('Table', 'header_state', fallback="")
+                    if header_state_str:
+                        header_state_bytes = base64.b64decode(header_state_str)
+                        self.table_widget.horizontalHeader().restoreState(header_state_bytes)
+                except Exception:
+                    pass # Ignore if header state cannot be restored
 
     def init_ui(self):
         main_layout = QVBoxLayout()
@@ -152,26 +214,30 @@ class LogAnalyzerApp(QWidget):
         combined_query_layout = QHBoxLayout()
 
         # Start Time
-        combined_query_layout.addWidget(QLabel("Start Time:"))
+        self.enable_start_time_checkbox = QCheckBox()
+        self.enable_start_time_checkbox.setChecked(True)
+        combined_query_layout.addWidget(self.enable_start_time_checkbox)
+
+        combined_query_layout.addWidget(QLabel("开始时间:"))
         self.start_time_edit = QDateTimeEdit(QDateTime.currentDateTime().addDays(-1))
         self.start_time_edit.setCalendarPopup(True)
         self.start_time_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
         combined_query_layout.addWidget(self.start_time_edit)
-        self.enable_start_time_checkbox = QCheckBox()
-        self.enable_start_time_checkbox.setChecked(True)
+
         self.enable_start_time_checkbox.toggled.connect(self.start_time_edit.setEnabled)
-        combined_query_layout.addWidget(self.enable_start_time_checkbox)
 
         # End Time
-        combined_query_layout.addWidget(QLabel("End Time:"))
+        self.enable_end_time_checkbox = QCheckBox()
+        self.enable_end_time_checkbox.setChecked(True)
+        combined_query_layout.addWidget(self.enable_end_time_checkbox)
+
+        combined_query_layout.addWidget(QLabel("结束时间:"))
         self.end_time_edit = QDateTimeEdit(QDateTime.currentDateTime())
         self.end_time_edit.setCalendarPopup(True)
         self.end_time_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
         combined_query_layout.addWidget(self.end_time_edit)
-        self.enable_end_time_checkbox = QCheckBox()
-        self.enable_end_time_checkbox.setChecked(True)
+
         self.enable_end_time_checkbox.toggled.connect(self.end_time_edit.setEnabled)
-        combined_query_layout.addWidget(self.enable_end_time_checkbox)
 
         # Phrase
         combined_query_layout.addWidget(QLabel("Phrase:"))
@@ -230,7 +296,7 @@ class LogAnalyzerApp(QWidget):
         headers = [
             "时间戳", "trace_id", "眼镜类型", "位置", "originType", "functionType",
             "locale", "时区", "语种", "首轮", "NLU查询", "NLU意图", "NLU回答",
-            "NLU Error", "NLU耗时", "LLM查询", "LLM意图", "LLM场景", "图像文件",
+            "NLU Error", "NLU耗时", "LLM查询", "LLM意图", "LLM场景", "照片",
             "角色扮演", "深度思考", "深度搜索", "视觉辅助", "清上下文", "LLM回答",
             "LLM思考", "LLM搜索数据", "LLM状态", "LLM耗时", "deviceId",
             "glassDeviceId", "iotDeviceId", "accountId", "xjAccountId",
@@ -255,8 +321,8 @@ class LogAnalyzerApp(QWidget):
         }
 
         filter_config = {
-            "timestamp_begin": self.start_time_edit.dateTime().toString("yyyy-MM-ddTHH:mm:ss.zzzZ") if self.enable_start_time_checkbox.isChecked() else None,
-            "timestamp_end": self.end_time_edit.dateTime().toString("yyyy-MM-ddTHH:mm:ss.zzzZ") if self.enable_end_time_checkbox.isChecked() else None,
+            "timestamp_begin": self.start_time_edit.dateTime().toUTC().toString("yyyy-MM-ddTHH:mm:ss.zzzZ") if self.enable_start_time_checkbox.isChecked() else None,
+            "timestamp_end": self.end_time_edit.dateTime().toUTC().toString("yyyy-MM-ddTHH:mm:ss.zzzZ") if self.enable_end_time_checkbox.isChecked() else None,
             "glass_product": self.glass_product_combo.currentText() if self.glass_product_combo.currentText() else None,
             "id_type": self.id_type_combo.currentText() if self.id_type_combo.currentText() else None,
             "id_value": self.id_value_input.text() if self.id_value_input.text() else None,
@@ -299,7 +365,20 @@ class LogAnalyzerApp(QWidget):
                 return item
 
             # General
-            self.table_widget.setItem(row_idx, col_idx, create_item(round.nlp_round.request_timestamp if round.nlp_round and round.nlp_round.request_timestamp else ""))
+            timestamp_str = round.nlp_round.request_timestamp if round.nlp_round and round.nlp_round.request_timestamp else ""
+            if timestamp_str:
+                # Assuming timestamp_str is in ISO 8601 format (e.g., "2025-08-20T12:34:56.789Z" or with offset)
+                # QDateTime.fromString can parse ISO 8601 directly
+                dt = QDateTime.fromString(timestamp_str, Qt.DateFormat.ISODate)
+                if dt.isValid():
+                    # Convert to local time
+                    local_dt = dt.toLocalTime()
+                    display_timestamp = local_dt.toString("yyyy-MM-dd HH:mm:ss")
+                else:
+                    display_timestamp = timestamp_str # Fallback if parsing fails
+            else:
+                display_timestamp = ""
+            self.table_widget.setItem(row_idx, col_idx, create_item(display_timestamp))
             col_idx += 1
             self.table_widget.setItem(row_idx, col_idx, create_item(round.traceId or ""))
             col_idx += 1
@@ -348,7 +427,12 @@ class LogAnalyzerApp(QWidget):
                 self.table_widget.setItem(row_idx, col_idx, create_item(str(round.llm_round.channel_type) if round.llm_round.channel_type is not None else ""))
                 col_idx += 1
                 files_text = "\n".join([file.ossUrl for file in round.llm_round.files]) if round.llm_round.files else ""
-                self.table_widget.setItem(row_idx, col_idx, create_item(files_text, files_text))
+                if files_text:
+                    item = create_item("", files_text) # Display empty text, tooltip is URL
+                    item.setIcon(QApplication.instance().style().standardIcon(QStyle.StandardPixmap.SP_FileIcon))
+                    self.table_widget.setItem(row_idx, col_idx, item)
+                else:
+                    self.table_widget.setItem(row_idx, col_idx, create_item(""))
                 col_idx += 1
                 self.table_widget.setItem(row_idx, col_idx, create_item(str(round.llm_round.play_status) if round.llm_round.play_status is not None else ""))
                 col_idx += 1
@@ -398,7 +482,7 @@ class LogAnalyzerApp(QWidget):
             "NLU回答": 250,
             "LLM查询": 250,
             "LLM回答": 250,
-            "图像文件": 250,
+            "照片": 30,
             "LLM思考": 250,
             "LLM搜索数据": 250,
         }
@@ -413,7 +497,7 @@ class LogAnalyzerApp(QWidget):
         self.search_button.setEnabled(True) # Re-enable button
 
     def handle_cell_double_clicked(self, row, column):
-        if self.table_widget.horizontalHeaderItem(column).text() == "图像文件":
+        if self.table_widget.horizontalHeaderItem(column).text() == "照片":
             item = self.table_widget.item(row, column)
             if item and item.toolTip():
                 self.image_fetcher = ImageFetcher(item.toolTip())
@@ -424,7 +508,7 @@ class LogAnalyzerApp(QWidget):
     def show_image_preview(self, pixmap):
         if not pixmap.isNull():
             self.image_preview_popup = ImagePreviewPopup(pixmap)
-            self.image_preview_popup.exec() # Use exec() for modal dialog
+            self.image_preview_popup.exec() # Use exec() for modal dialog (PyQt6)
 
     def show_image_fetch_error(self, message):
         QMessageBox.critical(self, "Image Fetch Error", message)
@@ -433,6 +517,53 @@ class LogAnalyzerApp(QWidget):
         QMessageBox.critical(self, "Error", message)
         self.status_bar.showMessage("Error: " + message)
         self.search_button.setEnabled(True) # Re-enable button
+
+    def save_settings(self):
+        config = configparser.ConfigParser()
+
+        # Save Window Geometry
+        geom = self.geometry()
+        config['Window'] = {
+            'x': str(geom.x()),
+            'y': str(geom.y()),
+            'width': str(geom.width()),
+            'height': str(geom.height())
+        }
+
+        # Save ELK Server Configuration
+        config['ELK_Config'] = {
+            'server_url': self.server_url_input.text(),
+            'username': self.username_input.text(),
+            'password': self.password_input.text(),
+            'environment': self.env_combo.currentText()
+        }
+
+        # Save Query Conditions
+        config['Query_Conditions'] = {
+            'start_time': self.start_time_edit.dateTime().toString("yyyy-MM-dd HH:mm:ss"),
+            'enable_start_time': str(self.enable_start_time_checkbox.isChecked()),
+            'end_time': self.end_time_edit.dateTime().toString("yyyy-MM-dd HH:mm:ss"),
+            'enable_end_time': str(self.enable_end_time_checkbox.isChecked()),
+            'phrase': self.phrase_input.text(),
+            'glass_product': self.glass_product_combo.currentText(),
+            'id_type': self.id_type_combo.currentText(),
+            'id_value': self.id_value_input.text(),
+            'query_size': self.query_size_input.text()
+        }
+
+        # Save Table Header State
+        header_state = self.table_widget.horizontalHeader().saveState()
+        config['Table'] = {
+            'header_state': header_state.toBase64().data().decode('utf-8')
+        }
+
+        settings_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), self.SETTINGS_FILE)
+        with open(settings_path, 'w') as configfile:
+            config.write(configfile)
+
+    def closeEvent(self, event):
+        self.save_settings()
+        event.accept()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
