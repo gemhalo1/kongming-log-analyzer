@@ -3,6 +3,7 @@ import requests
 import os
 import configparser
 import base64
+import csv
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QTableWidget, QTableWidgetItem, QComboBox, QDateTimeEdit,
@@ -271,7 +272,8 @@ class LogAnalyzerApp(QWidget):
         super().__init__()
         self.setWindowTitle("Kongming Log Analyzer")
         self.setGeometry(100, 100, 1200, 800) # Increased window size
-
+        
+        self.device_user_map = self.load_device_user_map()
         self.init_ui()
         self.query_worker = None
         self.image_preview_popup = None
@@ -356,6 +358,12 @@ class LogAnalyzerApp(QWidget):
         self.clear_filter_button = QPushButton("清除筛选")
         self.clear_filter_button.clicked.connect(self.clear_all_filters)
         toolbar.addWidget(self.clear_filter_button)
+        
+        toolbar.addSeparator()
+        
+        self.reload_user_map_button = QPushButton("重新加载用户映射")
+        self.reload_user_map_button.clicked.connect(self.reload_user_mapping)
+        toolbar.addWidget(self.reload_user_map_button)
         
         main_layout.addWidget(toolbar)
 
@@ -474,10 +482,46 @@ class LogAnalyzerApp(QWidget):
 
         self.setLayout(main_layout)
 
+    def load_device_user_map(self):
+        """Load device-user mapping from CSV file"""
+        device_user_map = {}
+        csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "device_user_map.csv")
+        
+        if os.path.exists(csv_path):
+            try:
+                with open(csv_path, 'r', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        key = f"{row['id_type']}:{row['id']}"
+                        device_user_map[key] = row['user']
+            except Exception as e:
+                print(f"Error loading device_user_map.csv: {e}")
+        
+        return device_user_map
+    
+    def get_user_name(self, round_data):
+        """Get user name based on device IDs from the round data"""
+        # Check different ID types in priority order
+        id_checks = [
+            ('iotDeviceId', round_data.iotDeviceId),
+            ('deviceId', round_data.deviceId),
+            ('glassDeviceId', round_data.glassDeviceId),
+            ('accountId', round_data.accountId),
+            ('xjAccountId', round_data.xjAccountId)
+        ]
+        
+        for id_type, id_value in id_checks:
+            if id_value:
+                key = f"{id_type}:{id_value}"
+                if key in self.device_user_map:
+                    return self.device_user_map[key]
+        
+        return ""  # Return empty string if no match found
+
     def setup_table_headers(self):
-        # Headers based on kongming/excel.py's titles
+        # Headers based on kongming/excel.py's titles with "使用者" as first column
         headers = [
-            "时间戳", "trace_id", "眼镜类型", "位置", "originType", "functionType",
+            "使用者", "时间戳", "trace_id", "眼镜类型", "位置", "originType", "functionType",
             "locale", "时区", "语种", "首轮", "NLU查询", "NLU意图", "NLU回答",
             "NLU Error", "NLU耗时", "LLM查询", "LLM意图", "LLM场景", "照片",
             "角色扮演", "深度思考", "深度搜索", "视觉辅助", "清上下文", "LLM回答",
@@ -521,6 +565,9 @@ class LogAnalyzerApp(QWidget):
             QMessageBox.critical(self, "Invalid Input", f"Invalid Query Size: {e}")
             return
 
+        # Clear current filters before starting new query
+        self.clear_all_filters()
+        
         self.status_bar.showMessage("Starting query...")
         self.search_button.setEnabled(False) # Disable button during query
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor) # Set busy cursor
@@ -551,7 +598,10 @@ class LogAnalyzerApp(QWidget):
             if round is None:
                 continue
 
-            
+            # First column: 使用者 (User)
+            user_name = self.get_user_name(round)
+            self.data_model.setItem(row_idx, col_idx, create_item(user_name))
+            col_idx += 1
 
             # General
             timestamp_str = round.nlp_round.request_timestamp if round.nlp_round and round.nlp_round.request_timestamp else ""
@@ -673,8 +723,8 @@ class LogAnalyzerApp(QWidget):
             col_idx += 1
             self.data_model.setItem(row_idx, col_idx, create_item(round.msgId or ""))
 
-        # Ensure column count matches expected
-        expected_columns = 36
+        # Ensure column count matches expected (added 1 for 使用者 column)
+        expected_columns = 37
         if self.data_model.columnCount() > expected_columns:
             print(f"Warning: Model has {self.data_model.columnCount()} columns, expected {expected_columns}")
             self.data_model.setColumnCount(expected_columns)
@@ -826,6 +876,41 @@ class LogAnalyzerApp(QWidget):
     def clear_all_filters(self):
         self.proxy_model._filters.clear()
         self.proxy_model.invalidateFilter()
+    
+    def reload_user_mapping(self):
+        """Reload user mapping file and refresh table data"""
+        self.device_user_map = self.load_device_user_map()
+        
+        # Refresh user column in existing data
+        for row in range(self.data_model.rowCount()):
+            # Get the round data from other columns to determine user (column indices adjusted for new first column)
+            device_id = self.data_model.item(row, 30).text() if self.data_model.item(row, 30) else ""
+            glass_device_id = self.data_model.item(row, 31).text() if self.data_model.item(row, 31) else ""
+            iot_device_id = self.data_model.item(row, 32).text() if self.data_model.item(row, 32) else ""
+            account_id = self.data_model.item(row, 33).text() if self.data_model.item(row, 33) else ""
+            xj_account_id = self.data_model.item(row, 34).text() if self.data_model.item(row, 34) else ""
+            
+            # Check different ID types in priority order
+            user_name = ""
+            id_checks = [
+                ('iotDeviceId', iot_device_id),
+                ('deviceId', device_id),
+                ('glassDeviceId', glass_device_id),
+                ('accountId', account_id),
+                ('xjAccountId', xj_account_id)
+            ]
+            
+            for id_type, id_value in id_checks:
+                if id_value:
+                    key = f"{id_type}:{id_value}"
+                    if key in self.device_user_map:
+                        user_name = self.device_user_map[key]
+                        break
+            
+            # Update user column (first column)
+            self.data_model.setItem(row, 0, create_item(user_name))
+        
+        self.status_bar.showMessage("用户映射已重新加载")
 
     def apply_filter(self, column_index, filter_text):
         # Clear all existing filters before applying new one
